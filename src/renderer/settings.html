@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="tr" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MetinBul Ayarları</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="settings">
+  <!-- Shared announcement channel (announcer.ts). -->
+  <div id="a11y-live-polite" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="a11y-live-assertive" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+  <div class="settings-shell">
+    <!-- Tabs pattern: the arrow keys move between sections, Tab moves into
+         the section. Only the active tab is in the tab order. -->
+    <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Ayar bölümleri">
+      <button type="button" class="settings-tab" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true">Genel</button>
+      <button type="button" class="settings-tab" role="tab" id="tab-locations" aria-controls="panel-locations" aria-selected="false" tabindex="-1">Arama Konumları</button>
+      <button type="button" class="settings-tab" role="tab" id="tab-index" aria-controls="panel-index" aria-selected="false" tabindex="-1">İndeks</button>
+      <button type="button" class="settings-tab" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1">Hakkında</button>
+    </div>
+
+    <main class="settings-content">
+      <section id="panel-general" class="settings-panel" role="tabpanel" aria-labelledby="tab-general" tabindex="0"></section>
+      <section id="panel-locations" class="settings-panel" role="tabpanel" aria-labelledby="tab-locations" tabindex="0" hidden></section>
+      <section id="panel-index" class="settings-panel" role="tabpanel" aria-labelledby="tab-index" tabindex="0" hidden></section>
+      <section id="panel-about" class="settings-panel" role="tabpanel" aria-labelledby="tab-about" tabindex="0" hidden></section>
+      <section id="panel-onboarding" class="settings-panel" aria-labelledby="onboarding-heading" hidden></section>
+    </main>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

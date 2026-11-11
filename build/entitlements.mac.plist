@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- V8 needs to map executable pages for the JIT. This is the one
+         entitlement an Electron app genuinely cannot run without under
+         Hardened Runtime; everything else in electron-builder's default
+         template is deliberately left out (see docs/macos-signing.md). -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>

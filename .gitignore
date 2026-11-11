@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+tests/fixtures/sample.*
+tests/fixtures/corrupt.*
+tests/fixtures/unsupported.txt
+tests/fixtures/test_index_ws/

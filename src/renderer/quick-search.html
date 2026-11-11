@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="tr" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MetinBul Hızlı Arama</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="qs">
+  <!-- Shared announcement channel (announcer.ts): permanent nodes, because a
+       reader must already be observing a live region when its text changes. -->
+  <div id="a11y-live-polite" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="a11y-live-assertive" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+  <div id="qs-panel" class="qs-panel" role="search" aria-label="MetinBul hızlı arama">
+    <div class="qs-field">
+      <svg class="qs-field-icon" aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"></circle>
+        <line x1="20.5" y1="20.5" x2="16" y2="16"></line>
+      </svg>
+      <label class="visually-hidden" for="qs-input">Belgelerde ara</label>
+      <!-- Combobox + listbox: arrow keys move the selection while focus stays
+           in the field, so the active option is exposed through
+           aria-activedescendant rather than by moving focus. -->
+      <input type="text" id="qs-input" placeholder="Belgelerde ara…"
+             autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="qs-listbox"
+             aria-autocomplete="list" aria-describedby="qs-input-hint">
+      <span id="qs-input-hint" class="visually-hidden"></span>
+      <span id="qs-busy" class="qs-busy" aria-hidden="true" hidden></span>
+      <button id="qs-settings" class="qs-icon-button" type="button" aria-label="Ayarlar">
+        <svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span id="qs-update-dot" class="qs-update-dot" aria-hidden="true" hidden></span>
+      </button>
+    </div>
+
+    <div id="qs-body" class="qs-body" hidden>
+      <div id="qs-meta" class="qs-meta">
+        <span id="qs-count" class="qs-count"></span>
+        <span class="qs-meta-sep" aria-hidden="true">·</span>
+        <label class="visually-hidden" for="qs-sort">Sonuçları sırala</label>
+        <select id="qs-sort" class="qs-sort">
+          <option value="modified">Son düzenlenen</option>
+          <option value="oldest">En eski</option>
+          <option value="relevance">Alaka düzeyi</option>
+        </select>
+      </div>
+      <p id="qs-coverage" class="qs-coverage" hidden></p>
+      <div id="qs-listbox" class="qs-list" role="listbox" aria-label="Arama sonuçları"></div>
+      <div id="qs-message" class="qs-message" hidden>
+        <p id="qs-message-primary" class="qs-message-primary"></p>
+        <p id="qs-message-secondary" class="qs-message-secondary" hidden></p>
+        <button id="qs-message-action" class="qs-link" type="button" hidden></button>
+      </div>
+      <div id="qs-footer" class="qs-footer" aria-hidden="true"></div>
+    </div>
+  </div>
+  <script src="quick-search.js"></script>
+</body>
+</html>

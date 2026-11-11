@@ -1,0 +1,107 @@
+name: Windows Placeholder Acceptance
+
+# Automated half of the v0.2.2 cloud-placeholder acceptance gate.
+#
+# Runs the real-filesystem guard tests (tests/windows_real_fs.test.ts) on an
+# actual Windows machine -- real PowerShell attribute reader, real NTFS
+# attributes, no mocks -- and then probes whether this machine can create a
+# genuine dehydrated Cloud Files API placeholder so the strongest invariant
+# (HYDRATION_STATE_BEFORE == HYDRATION_STATE_AFTER) can be proven without any
+# cloud account.
+#
+# A probe result of UNAVAILABLE is reported honestly as "not proven here"; it
+# never counts as the gate being satisfied.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'hotfix/**'
+
+jobs:
+  real-filesystem-guard:
+    # Pinned to windows-2022 for the same reason as windows-package.yml: the
+    # current windows-latest image breaks better-sqlite3's native build.
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Record PowerShell host details
+        shell: pwsh
+        run: |
+          Write-Host "PSVersion:      $($PSVersionTable.PSVersion)"
+          Write-Host "LanguageMode:   $($ExecutionContext.SessionState.LanguageMode)"
+          Write-Host "OutputEncoding: $([Console]::OutputEncoding.WebName)"
+          Write-Host "InputEncoding:  $([Console]::InputEncoding.WebName)"
+          Write-Host "OEM code page:  $((Get-WinSystemLocale).Name) / $([System.Text.Encoding]::Default.WebName)"
+          powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+      - name: Full test suite (includes real-Windows guard tests)
+        run: npm test
+
+      - name: Windows guard tests only, verbose
+        run: npx vitest run tests/windows_real_fs.test.ts --reporter=verbose
+
+      - name: Probe for a real CFAPI dehydrated placeholder
+        id: cfapi
+        shell: pwsh
+        run: ./scripts/windows/cfapi-placeholder-probe.ps1
+
+      - name: Acceptance summary
+        if: always()
+        shell: pwsh
+        run: |
+          $result = "${{ steps.cfapi.outputs.result }}"
+          $detail = "${{ steps.cfapi.outputs.detail }}"
+          if (-not $result) { $result = 'NOT_RUN' }
+
+          $lines = @()
+          $lines += "## Windows placeholder acceptance"
+          $lines += ""
+          $lines += "### Proven automatically on this runner"
+          $lines += "- PowerShell attribute reader against the real filesystem (UTF-8 Turkish paths, apostrophes, >MAX_PATH paths, batch index alignment, multi-batch runs)"
+          $lines += "- A real ``FILE_ATTRIBUTE_OFFLINE`` bit set by the OS is detected, the file is skipped, no extractor is invoked, and its attributes are unchanged afterwards"
+          $lines += "- Ordinary local documents are still indexed and searchable (the fail-closed rule does not over-skip)"
+          $lines += ""
+          $lines += "### CFAPI dehydrated placeholder probe"
+          $lines += "- Result: ``$result``"
+          $lines += "- Detail: $detail"
+          $lines += ""
+
+          switch ($result) {
+            'PLACEHOLDER_VERIFIED' {
+              $lines += "A genuine ``FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`` placeholder was created and stayed dehydrated across a full index run."
+              $lines += ""
+              $lines += "**Still not covered:** that OneDrive specifically sets and clears this bit the way the Cloud Files API documents. That is the remaining physical-OneDrive gate."
+            }
+            'UNAVAILABLE' {
+              $lines += "**This runner cannot create a real dehydrated placeholder, so the strongest invariant is NOT proven here.**"
+              $lines += ""
+              $lines += "``FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`` is settable only by kernel-mode callers, so nothing in this run can substitute for it. The physical Windows 11 + OneDrive Files On-Demand acceptance gate remains OPEN."
+              $lines += ""
+              $lines += "This is the expected result on GitHub-hosted runners: they are Windows **Server** images (windows-2022 = Server 2022, windows-2025 = Server 2025), and there is no GitHub-hosted Windows *client* runner. ``CfRegisterSyncRoot`` and ``CfConnectSyncRoot`` succeed and CldFlt attaches an instance to the volume, but both placeholder-creation routes are rejected with cloud-file-specific errors. Closing this gate needs a Windows 11 client with OneDrive Files On-Demand."
+            }
+            default {
+              $lines += "**Probe did not complete. Treat the acceptance gate as OPEN.**"
+            }
+          }
+
+          $text = $lines -join "`n"
+          Write-Host $text
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $text | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }

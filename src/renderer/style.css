@@ -1,0 +1,1947 @@
+/* Design tokens. Two light states of one system (spec §20-23): warm graphite
+   ("sumi") in the dark, warm off-white in the light, one teal accent used
+   only where it means something -- selection, the match, keyboard focus.
+   Every text/background pair used in the panel was checked for WCAG AA
+   (4.5:1), including secondary text on a selected row. */
+:root {
+  --bg-body: #1c1b1a;
+  --bg-surface: #242322;
+  --bg-surface-hover: #2c2b29;
+  --bg-input: #242322;
+  --bg-panel: #242322;
+  --border-color: #3a3835;
+  --border-subtle: #2e2d2a;
+
+  --text-main: #e9e6e1;
+  --text-snippet: #d2cec7;
+  --text-muted: #b0aca4;
+  --text-dim: #a39f97;
+
+  --accent-teal: #72b5af;
+  --accent-teal-hover: #86c2bc;
+  --accent-teal-light: rgba(114, 181, 175, 0.13);
+  --accent-teal-focus: rgba(114, 181, 175, 0.32);
+  --selected-bg: rgba(114, 181, 175, 0.13);
+
+  --accent-amber: #d9a441;
+  /* Text on an accent fill: 7.3:1 here, where white would be 2.35:1. */
+  --on-accent: #1c1b1a;
+
+  --mark-bg: rgba(114, 181, 175, 0.26);
+  --mark-text: inherit;
+
+  --scrollbar-thumb: #3b3936;
+  --scrollbar-thumb-hover: #4a4844;
+
+  --badge-docx-bg: #26313a;
+  --badge-docx-text: #9db4cf;
+  --badge-pdf-bg: #3a2a28;
+  --badge-pdf-text: #dd9a90;
+  --badge-udf-bg: #322b38;
+  --badge-udf-text: #bba9cf;
+  --badge-doc-bg: #2a2f38;
+  --badge-doc-text: #a7b0c9;
+
+  --popover-overlay-bg: rgba(0, 0, 0, 0.5);
+  --popover-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  --banner-bg: #222b29;
+  --banner-border: #34413e;
+  --banner-text: #b9dcd8;
+
+  --radius: 6px;
+
+  --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+[data-theme="light"] {
+  --bg-body: #f5f4f1;
+  --bg-surface: #fbfaf8;
+  --bg-surface-hover: #edebe6;
+  --bg-input: #fbfaf8;
+  --bg-panel: #fbfaf8;
+  --border-color: #d9d6cf;
+  --border-subtle: #e6e3dd;
+
+  --text-main: #282724;
+  --text-snippet: #3b3a36;
+  --text-muted: #57534d;
+  --text-dim: #6b675f;
+
+  --accent-teal: #2b7671;
+  --accent-teal-hover: #225f5b;
+  --accent-teal-light: rgba(43, 118, 113, 0.1);
+  --accent-teal-focus: rgba(43, 118, 113, 0.24);
+  --selected-bg: rgba(43, 118, 113, 0.11);
+
+  --accent-amber: #8f6210;
+  --on-accent: #ffffff;
+
+  --mark-bg: rgba(43, 118, 113, 0.17);
+  --mark-text: inherit;
+
+  --scrollbar-thumb: #cfccc5;
+  --scrollbar-thumb-hover: #b7b3ab;
+
+  --badge-docx-bg: #e6edf5;
+  --badge-docx-text: #2a5582;
+  --badge-pdf-bg: #f6e7e4;
+  --badge-pdf-text: #9b3a2c;
+  --badge-udf-bg: #eee9f3;
+  --badge-udf-text: #5c4683;
+  --badge-doc-bg: #e8ebf1;
+  --badge-doc-text: #33496d;
+
+  --popover-overlay-bg: rgba(40, 39, 36, 0.3);
+  --popover-shadow: 0 8px 24px rgba(40, 39, 36, 0.12);
+
+  --banner-bg: #e9f1ef;
+  --banner-border: #c8dcd8;
+  --banner-text: #22524e;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--bg-body);
+  color: var(--text-main);
+  line-height: 1.4;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 14px 18px 8px 18px;
+  gap: 10px;
+}
+
+/* Header Bar */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 2px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+}
+
+.logo {
+  font-size: 18px;
+  letter-spacing: -0.3px;
+  color: var(--text-main);
+}
+
+.logo-regular {
+  font-weight: 400;
+  color: var(--text-main);
+}
+
+.logo-bold {
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover {
+  background-color: var(--bg-surface-hover);
+  color: var(--text-main);
+  border-color: var(--accent-teal);
+}
+
+.btn:active {
+  background-color: var(--bg-surface-hover);
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.btn-icon:hover {
+  color: var(--text-main);
+  background-color: var(--bg-surface-hover);
+}
+
+/* Update Banner */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background-color: var(--banner-bg);
+  border: 1px solid var(--banner-border);
+  border-radius: 5px;
+  animation: fadeIn 0.15s ease;
+}
+
+.update-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--accent-teal);
+  flex-shrink: 0;
+}
+
+.update-banner-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--banner-text);
+}
+
+.btn-update-action {
+  background-color: var(--accent-teal);
+  color: var(--on-accent);
+  border: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.btn-update-action:hover {
+  background-color: var(--accent-teal-hover);
+}
+
+.update-dismiss {
+  font-size: 12px;
+  color: var(--banner-text);
+  opacity: 0.7;
+}
+
+.update-dismiss:hover {
+  opacity: 1;
+  background: transparent;
+}
+
+/* Search Box */
+.search-section {
+  width: 100%;
+}
+
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 7px 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.search-box:focus-within {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px var(--accent-teal-focus);
+}
+
+.search-icon {
+  color: var(--text-muted);
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.search-box input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 13.5px;
+  color: var(--text-main);
+  font-family: var(--font-family);
+}
+
+.search-box input::placeholder {
+  color: var(--text-dim);
+}
+
+/* The field has its own clear button (#btn-clear-search); without this
+   Chromium draws a second one for type="search". */
+.search-box input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+/* Status Line */
+.status-bar {
+  display: flex;
+  align-items: center;
+  min-height: 16px;
+}
+
+.status-text {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* Results Container */
+.results-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sort-select {
+  font-family: var(--font-family);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.sort-select:hover {
+  color: var(--text-main);
+  border-color: var(--accent-teal);
+}
+
+.results-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.results-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.results-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.results-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.results-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Result Row - Desktop Density */
+.result-row {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+  gap: 3px;
+}
+
+.result-row:hover {
+  background-color: var(--bg-surface-hover);
+}
+
+.result-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.result-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.result-filename {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Extension Badges */
+.ext-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+.ext-docx { background-color: var(--badge-docx-bg); color: var(--badge-docx-text); }
+.ext-pdf { background-color: var(--badge-pdf-bg); color: var(--badge-pdf-text); }
+.ext-udf { background-color: var(--badge-udf-bg); color: var(--badge-udf-text); }
+.ext-doc { background-color: var(--badge-doc-bg); color: var(--badge-doc-text); }
+
+.result-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.result-row:hover .result-actions {
+  opacity: 1;
+}
+
+.btn-action {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn-action:hover {
+  background-color: var(--bg-surface-hover);
+  color: var(--text-main);
+  border-color: var(--accent-teal);
+}
+
+.result-snippet {
+  font-size: 12.5px;
+  color: var(--text-main);
+  line-height: 1.35;
+  word-break: break-word;
+  opacity: 0.92;
+}
+
+.result-snippet mark,
+.qs-option-snippet mark {
+  background-color: var(--mark-bg);
+  color: var(--mark-text);
+  font-weight: 600;
+  padding: 0;
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.result-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-match-count {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.result-snippet-more {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Placeholder State */
+.placeholder-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 180px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Footer Status Bar */
+.app-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-subtle);
+  min-height: 20px;
+}
+
+.footer-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.footer-text {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-divider {
+  color: var(--text-dim);
+  font-size: 9px;
+  opacity: 0.5;
+}
+
+.footer-action-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.15s ease;
+  user-select: none;
+}
+
+.footer-action-link:hover {
+  color: var(--accent-teal);
+}
+
+.footer-action-link:focus-visible {
+  color: var(--accent-teal-hover);
+}
+
+/* Compact Popover / Modal Dialog */
+.popover-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--popover-overlay-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.12s ease;
+}
+
+.popover-card {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 18px 20px;
+  width: 420px;
+  max-width: 92vw;
+  box-shadow: var(--popover-shadow);
+  color: var(--text-main);
+  animation: scaleIn 0.12s ease;
+}
+
+.popover-card-wide {
+  width: 520px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.popover-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 3px;
+  transition: color 0.15s ease;
+}
+
+.popover-close-btn:hover {
+  color: var(--text-main);
+}
+
+.popover-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.popover-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.popover-title {
+  font-size: 16px;
+  letter-spacing: -0.2px;
+  color: var(--text-main);
+}
+
+.popover-title-sm {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.popover-version {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.popover-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.popover-desc-sm {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.popover-meta {
+  font-size: 11.5px;
+  color: var(--text-main);
+  margin-top: 2px;
+}
+
+.popover-copyright {
+  font-size: 12px;
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.popover-contact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.popover-label {
+  color: var(--text-muted);
+}
+
+.popover-value {
+  color: var(--text-main);
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.popover-actions-split {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.btn-primary-sm {
+  background: var(--accent-teal);
+  color: var(--on-accent);
+  border: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-primary-sm:hover {
+  background: var(--accent-teal-hover);
+}
+
+.btn-primary-sm:active {
+  transform: translateY(1px);
+}
+
+.btn-secondary-sm {
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn-secondary-sm:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--accent-teal);
+}
+
+.btn-secondary-sm:active {
+  transform: translateY(1px);
+}
+
+.feedback-copy-status {
+  font-size: 11px;
+  color: var(--accent-teal);
+  font-weight: 500;
+  animation: fadeIn 0.15s ease;
+}
+
+/* Search Areas Dialog */
+.search-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px 0;
+  padding: 9px 12px;
+  background-color: var(--bg-body);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.search-mode-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.search-mode-options {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 500;
+  user-select: none;
+}
+
+.radio-label input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-teal);
+}
+
+.search-scope-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.scope-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.scope-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scope-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.search-areas-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.search-areas-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding-right: 2px;
+}
+
+.search-area-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background-color: var(--bg-body);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.search-area-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.search-area-path {
+  font-size: 11.5px;
+  font-family: monospace;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.area-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+.area-badge-include {
+  background-color: var(--accent-teal-light);
+  color: var(--accent-teal);
+}
+
+.area-badge-exclude {
+  background-color: var(--badge-pdf-bg);
+  color: var(--badge-pdf-text);
+}
+
+.search-areas-empty {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 8px 0 2px 0;
+}
+
+.btn-remove-area {
+  font-size: 10.5px;
+  padding: 2px 6px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Startup & background settings (Kısayol popover) */
+.settings-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 500;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-teal);
+  flex-shrink: 0;
+}
+
+.checkbox-label input[type="checkbox"]:disabled {
+  cursor: progress;
+}
+
+/* Deliberately not the accent colour used by .feedback-copy-status: a
+   shortcut that failed to register, or a login item macOS has not approved,
+   is a warning the user has to act on -- not a confirmation. */
+.settings-warning {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--accent-amber);
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+.footer-action-link.footer-action-warning {
+  color: var(--accent-amber);
+}
+
+/* The hidden attribute must win over any display set by a class below. */
+[hidden] {
+  display: none !important;
+}
+
+/* =========================================================================
+   QUICK SEARCH PANEL
+   The panel keeps its natural height (the window is sized to it) and only
+   the result list scrolls. Rows are separated by space, not borders; the
+   accent appears only on the selected row, the match and keyboard focus.
+   ========================================================================= */
+body.qs {
+  background-color: var(--bg-panel);
+}
+
+.qs-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A short, quiet entrance -- opacity and a 3px drift, nothing that bounces.
+   Removed entirely under reduced motion by the accessibility layer below. */
+.qs-panel-enter {
+  animation: qsEnter 140ms ease-out;
+}
+
+@keyframes qsEnter {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Height must match QUICK_SEARCH_COMPACT_HEIGHT in main.ts: this row alone
+   is the panel's resting size. */
+.qs-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 58px;
+  padding: 0 12px 0 18px;
+  flex-shrink: 0;
+}
+
+.qs-field-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.qs-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-family);
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.2px;
+  color: var(--text-main);
+  outline: none;
+}
+
+/* The field is the panel's one primary control and has focus whenever the
+   panel is up; its indicator is the caret, drawn in the accent colour (6.7:1
+   dark, 5.1:1 light) -- as in Spotlight, no ring and no stripe along the
+   panel edge. Every other control in the panel keeps the global ring. */
+.qs-field input {
+  caret-color: var(--accent-teal);
+}
+
+.qs-field input::placeholder {
+  color: var(--text-dim);
+}
+
+.qs-busy {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent-teal);
+  flex-shrink: 0;
+  animation: qsPulse 1s ease-in-out infinite;
+}
+
+@keyframes qsPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.qs-icon-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.qs-icon-button:hover {
+  color: var(--text-main);
+  background-color: var(--bg-surface-hover);
+}
+
+.qs-update-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent-teal);
+}
+
+.qs-body {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.qs-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px 3px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.qs-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.qs-coverage {
+  padding: 0 18px 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.qs-meta-sep {
+  opacity: 0.7;
+}
+
+.qs-sort {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  border-radius: 4px;
+  background-color: transparent;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 7px) 55%, calc(100% - 3px) 55%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  color: var(--text-dim);
+  font-family: var(--font-family);
+  font-size: 11.5px;
+  padding: 2px 16px 2px 4px;
+  cursor: pointer;
+}
+
+.qs-sort:hover {
+  color: var(--text-main);
+  background-color: var(--bg-surface-hover);
+}
+
+.qs-list {
+  flex: 0 1 auto;
+  overflow-y: auto;
+  padding: 2px 8px 6px;
+}
+
+.qs-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.qs-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.qs-list .result-row {
+  gap: 2px;
+  padding: 8px 10px 9px 9px;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius);
+  cursor: default;
+}
+
+.qs-list .result-row:hover {
+  background-color: var(--bg-surface-hover);
+}
+
+/* Selection is a tinted background plus a bar on the leading edge, so it
+   never rests on colour alone. */
+.qs-list .result-row[aria-selected="true"] {
+  background-color: var(--selected-bg);
+  border-left: 3px solid var(--accent-teal);
+}
+
+.qs-option-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: normal;
+}
+
+.qs-option-snippet {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-snippet);
+  overflow-wrap: anywhere;
+}
+
+/* Extra passages and the remaining-match count belong to the selected row
+   only: one line of evidence per document, more for the one in focus. */
+.qs-option-extra {
+  display: none;
+}
+
+.qs-list .result-row[aria-selected="true"] .qs-option-extra {
+  display: block;
+}
+
+.qs-option-more {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.qs-option-location {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.qs-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 14px 18px 16px;
+  flex-shrink: 0;
+}
+
+.qs-message-primary {
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.qs-message-secondary {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Errors are amber and bold-free: different from "nothing found" without
+   shouting. The wording, not the colour, carries the meaning. */
+.qs-message-error .qs-message-primary {
+  color: var(--accent-amber);
+}
+
+.qs-link {
+  margin-top: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-family);
+  font-size: 12px;
+  color: var(--accent-teal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.qs-footer {
+  padding: 4px 18px 9px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  flex-shrink: 0;
+}
+
+/* Focus rings follow the shape of the control they surround. */
+.qs-icon-button:focus-visible,
+.qs-sort:focus-visible,
+.settings-tab:focus-visible {
+  border-radius: var(--radius);
+}
+
+/* =========================================================================
+   SETTINGS WINDOW
+   Configuration and maintenance, laid out like the system's own settings:
+   a tab strip, then quiet groups of rows. One level of grouping only.
+   ========================================================================= */
+body.settings {
+  background-color: var(--bg-body);
+  user-select: text;
+}
+
+.settings-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.settings-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.settings-tab {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-family);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  color: var(--text-main);
+  background-color: var(--bg-surface-hover);
+}
+
+/* The active section: tint plus an underline bar, not colour alone. */
+.settings-tab[aria-selected="true"] {
+  color: var(--text-main);
+  background-color: var(--selected-bg);
+  box-shadow: inset 0 -2px 0 var(--accent-teal);
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 28px 32px;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.settings-panel:focus-visible {
+  outline-offset: 6px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.settings-card {
+  padding: 2px 14px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-row-label {
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.settings-row-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-row .checkbox-label {
+  font-size: 13px;
+}
+
+.settings-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.settings-choice .radio-label {
+  font-size: 13px;
+}
+
+.settings-select {
+  min-width: 120px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background-color: var(--bg-input);
+  color: var(--text-main);
+  font-family: var(--font-family);
+  font-size: 12.5px;
+}
+
+.settings-note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.settings-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.settings-notice {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background-color: var(--selected-bg);
+  color: var(--text-main);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.settings-inline-link {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-teal);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.settings-kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background-color: var(--bg-body);
+  color: var(--text-main);
+  font-family: var(--font-family);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Theme choice: a segmented control built from real radio buttons, so it is
+   a radio group to assistive technology and to the keyboard. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background-color: var(--bg-body);
+}
+
+.segmented-option {
+  position: relative;
+  display: inline-flex;
+}
+
+.segmented-option input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.segmented-option span {
+  padding: 3px 14px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.segmented-option input:checked + span {
+  background-color: var(--bg-surface);
+  color: var(--text-main);
+  box-shadow: 0 0 0 1px var(--border-color);
+  font-weight: 500;
+}
+
+.segmented-option input:focus-visible + span {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 1px;
+}
+
+.settings-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 2px 0;
+}
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background-color: var(--bg-surface);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.settings-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+}
+
+.settings-list-item + .settings-list-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-list-path {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.settings-list-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.settings-list-name {
+  font-size: 12.5px;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.settings-list-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.index-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.index-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.index-updated {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.index-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.index-progress progress {
+  flex: 1;
+  height: 6px;
+  accent-color: var(--accent-teal);
+}
+
+.index-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.index-issues strong {
+  font-weight: 600;
+}
+
+.index-details summary {
+  font-size: 12.5px;
+  color: var(--accent-teal);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.index-details-body {
+  margin-top: 8px;
+}
+
+.about-head {
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.about-title {
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.3px;
+  color: var(--text-main);
+}
+
+.about-version {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.about-description {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.about-copyright {
+  font-size: 12.5px;
+  color: var(--text-main);
+}
+
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.onboarding-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* =========================================================================
+   ACCESSIBILITY LAYER
+   Screen-reader-only text, focus visibility, text scaling, reduced motion
+   and Windows forced-colors support. Nothing here changes the visual design
+   for a user who has not opted into an accessibility preference.
+   ========================================================================= */
+
+/* --- Screen-reader-only text --------------------------------------------
+   Clip rather than display:none / visibility:hidden: hidden text is removed
+   from the accessibility tree entirely, which would defeat the purpose. */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Keyboard users land here first; it stays off-screen until focused. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 8px;
+  z-index: 2000;
+  padding: 8px 14px;
+  background-color: var(--bg-surface);
+  color: var(--text-main);
+  border: 2px solid var(--accent-teal);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-family);
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+/* --- Focus visibility (spec §14, §20) -----------------------------------
+   Focus is never signalled by colour alone: every focusable control gets a
+   2px outline plus an offset ring, which survives Windows High Contrast. */
+:focus-visible {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.search-box:focus-within {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 1px;
+}
+
+/* The row actions fade in on hover; without this they would be focusable
+   while fully transparent, i.e. a focus stop with no visible focus. */
+.result-row:focus-within .result-actions,
+.result-actions:focus-within {
+  opacity: 1;
+}
+
+/* --- Result rows --------------------------------------------------------
+   The filename is a real button (it is the row's primary action) but must
+   keep looking like the plain text it replaced. */
+.result-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result-row:focus-within {
+  background-color: var(--bg-surface-hover);
+}
+
+/* Selected Quick Search option: a left bar and a background change, so the
+   state is not carried by colour alone (spec §20). */
+.qs-results .result-row[aria-selected="true"] {
+  border-left: 3px solid var(--accent-teal);
+}
+
+/* --- Text scaling (spec §22, §24) ---------------------------------------
+   `zoom` is used rather than a font-size multiplier because the layout is
+   sized in px throughout: zoom reflows the whole document, so nothing is
+   clipped or overlapped at 200%. The height chain is percentage-based so the
+   app container does not overflow the zoomed viewport. */
+html {
+  height: 100%;
+  zoom: var(--a11y-text-scale, 1);
+}
+
+body {
+  height: 100%;
+}
+
+/* At large scales the header and footer rows must wrap rather than clip:
+   no critical text is allowed to disappear behind an ellipsis (spec §22). */
+.app-header,
+.header-actions,
+.footer-status-row,
+.footer-actions,
+.results-header,
+.result-row-header {
+  flex-wrap: wrap;
+}
+
+.result-filename,
+.result-path,
+.search-area-path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* --- Linear result view (spec §25) --------------------------------------
+   An optional single-column reading order for the result rows. The default
+   layout is already accessible; this is a preference, not a fallback. */
+[data-layout="linear"] .result-row-header {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+[data-layout="linear"] .result-actions {
+  opacity: 1;
+}
+
+[data-layout="linear"] .results-header {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* --- Reduced motion (spec §23) ------------------------------------------
+   Motion never carries information here, so it can be removed outright.
+   Both the OS setting and the in-app override are honoured. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) *,
+  :root:not([data-motion="full"]) *::before,
+  :root:not([data-motion="full"]) *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[data-motion="reduce"] *,
+[data-motion="reduce"] *::before,
+[data-motion="reduce"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* --- In-app high contrast (spec §24) ------------------------------------
+   Raises token contrast without depending on the OS setting, for users who
+   want it in MetinBul only. */
+[data-contrast="high"] {
+  --text-main: #ffffff;
+  --text-muted: #e6e9ec;
+  --text-dim: #cbd2d8;
+  --border-color: #ffffff;
+  --border-subtle: #b9c1c8;
+  --accent-teal: #7fe3df;
+  --accent-teal-hover: #a5efec;
+  --mark-bg: #005f5c;
+  --mark-text: #ffffff;
+}
+
+[data-theme="light"][data-contrast="high"] {
+  --text-main: #000000;
+  --text-muted: #1c1f23;
+  --text-dim: #33383d;
+  --border-color: #000000;
+  --border-subtle: #333a41;
+  --accent-teal: #0f5d5a;
+  --accent-teal-hover: #0a4442;
+  --mark-bg: #ffe08a;
+  --mark-text: #000000;
+}
+
+[data-contrast="high"] .result-row,
+[data-contrast="high"] .btn,
+[data-contrast="high"] .btn-action,
+[data-contrast="high"] .popover-card {
+  border-width: 2px;
+}
+
+/* --- Windows High Contrast / forced colors (spec §21) --------------------
+   Under forced-colors Windows replaces the palette with the user's system
+   colours and drops most backgrounds. Anything that carried meaning through
+   a brand colour has to be restated with a system colour or a border, or the
+   information is simply lost for NVDA/JAWS users running High Contrast. */
+@media (forced-colors: active) {
+  /* Let the OS palette through instead of fighting it. */
+  :root,
+  [data-theme="light"],
+  [data-contrast="high"] {
+    --bg-body: Canvas;
+    --bg-surface: Canvas;
+    --bg-surface-hover: Canvas;
+    --bg-input: Field;
+    --text-main: CanvasText;
+    --text-muted: CanvasText;
+    --text-dim: GrayText;
+    --border-color: CanvasText;
+    --border-subtle: CanvasText;
+    --accent-teal: Highlight;
+    --accent-teal-hover: Highlight;
+    --mark-bg: Mark;
+    --mark-text: MarkText;
+    --popover-overlay-bg: Canvas;
+    --banner-bg: Canvas;
+    --banner-text: CanvasText;
+    --banner-border: CanvasText;
+  }
+
+  /* Focus must stay visible: forced-colors discards custom outline colours,
+     so the outline is restated with the system highlight colour. */
+  :focus-visible,
+  .search-box:focus-within {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* Boundaries that were drawn only with a background colour need a real
+     border, otherwise the dialog and the page behind it merge. */
+  .popover-card,
+  .search-box,
+  .result-row,
+  .update-banner,
+  .btn,
+  .btn-action,
+  .sort-select {
+    border: 1px solid CanvasText;
+  }
+
+  /* Selection was background-colour only; add a border so it survives. */
+  .result-row[aria-selected="true"],
+  .qs-results .result-row.qs-selected {
+    border: 2px solid Highlight;
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+
+  /* The match highlight is the app's core signal; Mark/MarkText is the one
+     pair Windows reserves for exactly this. */
+  mark {
+    background-color: Mark;
+    color: MarkText;
+    forced-color-adjust: none;
+  }
+
+  /* File-type badges lose their tinted backgrounds, so outline them. */
+  .ext-badge {
+    border: 1px solid CanvasText;
+    forced-color-adjust: none;
+    background-color: Canvas;
+    color: CanvasText;
+  }
+
+  /* A warning shown only in amber would become indistinguishable. */
+  .settings-warning,
+  .footer-action-link.footer-action-warning {
+    color: CanvasText;
+    text-decoration: underline;
+  }
+
+  /* Decorative status dot conveys nothing on its own; hide it rather than
+     leaving an unexplained square. */
+  .update-dot {
+    display: none;
+  }
+}
+
+/* --- Settings fields (Erişilebilirlik section) -------------------------- */
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.settings-field label {
+  font-weight: 500;
+}
+
+.settings-field select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
