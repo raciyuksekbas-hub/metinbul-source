@@ -39,7 +39,7 @@ describe('the Windows notification area icon', () => {
 
   it('only offers the setting where MetinBul can really stay resident', () => {
     expect(functionBody('getStartupSettingsPayload')).toContain('backgroundSupported: canStayResident()');
-    const handler = MAIN_TS.slice(MAIN_TS.indexOf("ipcMain.handle('app:setKeepRunningInBackground'"));
+    const handler = MAIN_TS.slice(MAIN_TS.indexOf("handle('app:setKeepRunningInBackground'"));
     expect(handler.slice(0, 200)).toContain('if (!canStayResident())');
   });
 

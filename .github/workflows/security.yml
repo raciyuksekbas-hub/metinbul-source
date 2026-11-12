@@ -1,0 +1,178 @@
+name: Security
+
+# Supply-chain and code checks. Every third-party action is pinned to a full
+# commit SHA; the trailing comment names the release it was resolved from.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so advisories published after the last push still fail a run.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      codeql:
+        description: 'Also run CodeQL (read the comment on the codeql job first)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      # Also checks that package-lock.json matches package.json. No install
+      # scripts run: nothing is built, and electron's binary is not downloaded.
+      - name: Install dependencies without their install scripts
+        id: install
+        run: npm ci --ignore-scripts
+
+      # The gates below run even when an earlier one fails, so one run shows
+      # every problem. npm audit prints the full report whatever the level;
+      # --audit-level only sets which severity makes it exit non-zero.
+      - name: All dependencies - full report, fail on critical
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm audit --audit-level=critical
+
+      - name: Production dependencies - fail on any vulnerability
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm audit --omit=dev --audit-level=info
+
+      # electron is a devDependency, but it is the runtime that ships inside
+      # MetinBul, and --omit=dev skips it. Fail on any severity.
+      - name: Electron - fail on any vulnerability
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node scripts/security/audit-electron.mjs "$RUNNER_TEMP/npm-audit.json"
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      # Prints only file:line pattern-name, never the matched text.
+      # Never opens tests/real-fixtures (real client documents).
+      - name: Scan tracked files for secrets
+        run: node scripts/security/scan-secrets.mjs
+
+  # CodeQL (SAST) runs only when dispatched by hand with `codeql: true`.
+  #
+  # Technically it would run here: with `upload: never` and
+  # `upload-database: false` nothing is sent to code scanning, and the CodeQL
+  # Action (src/feature-flags.ts and src/status-report.ts at the pinned commit)
+  # turns the 403 that this repository's code-scanning API answers into
+  # warnings. The licence is the problem. The CodeQL CLI that the action runs is
+  # under the GitHub CodeQL Terms and Conditions
+  # (https://github.com/github/codeql-cli-binaries/blob/main/LICENSE.md):
+  # without a paid GitHub Advanced Security / Code Security licence, automated
+  # analysis or CI is allowed only on an "Open Source Codebase" (released under
+  # an OSI-approved licence) hosted and maintained on GitHub.com, and the terms
+  # give "code in a private repo in GitHub" as an example of what is not one.
+  # The action's README says it may be used on open source projects on GitHub
+  # and on private repositories owned by an organisation with Advanced
+  # Security. This repository is private, owned by a user, has no Advanced
+  # Security, and holds unreleased changes plus client documents
+  # (tests/real-fixtures) that are not released under MIT.
+  #
+  # So it never runs on push, pull_request or schedule. Dispatch it only for a
+  # commit whose tree has been published under MIT in the public
+  # raciyuksekbas-hub/metinbul-source repository; the sparse checkout limits
+  # the analysis to the published part (src, scripts, .github and the root
+  # files; no tests). The SARIF files are kept as a workflow artifact, not
+  # uploaded. The clean alternative is CodeQL in metinbul-source itself, where
+  # code scanning is free, which needs Actions enabled there (the owner's call).
+  codeql:
+    name: CodeQL (${{ matrix.language }}, manual)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.codeql }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # The action looks up this run's workflow file; private repositories need this.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # build-mode is set per job, so one language per job.
+        language: [javascript-typescript, actions]
+    steps:
+      - name: Checkout the published part of the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            src
+            scripts
+            .github
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze without uploading anything
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          upload: never
+          upload-database: false
+          output: ${{ runner.temp }}/codeql-sarif
+
+      - name: Keep the SARIF as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-sarif
+          if-no-files-found: error
+          retention-days: 30
+
+      # The analyze step does not fail on results; this one lists them and does.
+      - name: List results and fail if there are any
+        env:
+          SARIF_DIR: ${{ runner.temp }}/codeql-sarif
+        run: |
+          node --input-type=module -e '
+            import { readdirSync, readFileSync } from "node:fs";
+            import { join } from "node:path";
+            let count = 0;
+            for (const file of readdirSync(process.env.SARIF_DIR).filter((f) => f.endsWith(".sarif"))) {
+              for (const run of JSON.parse(readFileSync(join(process.env.SARIF_DIR, file), "utf8")).runs ?? []) {
+                for (const result of run.results ?? []) {
+                  const loc = result.locations?.[0]?.physicalLocation;
+                  console.log(`${loc?.artifactLocation?.uri}:${loc?.region?.startLine} ${result.ruleId} (${result.level ?? "warning"})`);
+                  count++;
+                }
+              }
+            }
+            console.log(`CodeQL results: ${count}`);
+            process.exitCode = count > 0 ? 1 : 0;
+          '

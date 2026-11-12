@@ -73,8 +73,8 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { makePrivateTempDir, removePrivateTempDir } from '../shared/private-temp.js';
 
 /** Documented Windows file attribute constants (WinNT.h). */
 export const FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
@@ -188,20 +188,19 @@ const POWERSHELL_CANDIDATES = ['powershell.exe', 'pwsh.exe'];
 const WINDOWS_ATTRIBUTE_BATCH_SIZE = 1000;
 const ATTRIBUTE_READER_TIMEOUT_MS = 30000;
 
-let listFileCounter = 0;
-
 function runAttributeReader(executable: string, filePaths: string[]): Promise<string | null> {
-  // ASCII-only, quote-free name so it can be embedded in the script literal.
-  const listPath = path.join(
-    os.tmpdir(),
-    `metinbul-attrs-${process.pid}-${listFileCounter++}.txt`
-  );
-
+  // The list names the files being checked: it lives in a folder of its own
+  // with an ASCII, quote-free name (see private-temp.ts), removed when the
+  // reader is done.
+  let listDir: string;
+  let listPath: string;
   try {
+    listDir = makePrivateTempDir('attrs');
+    listPath = path.join(listDir, 'paths.txt');
     fs.writeFileSync(
       listPath,
       filePaths.map(toExtendedLengthPath).join('\r\n') + '\r\n',
-      { encoding: 'utf8' }
+      { encoding: 'utf8', flag: 'wx' }
     );
   } catch {
     return Promise.resolve(null);
@@ -220,7 +219,7 @@ function runAttributeReader(executable: string, filePaths: string[]): Promise<st
         { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
       );
     } catch {
-      try { fs.unlinkSync(listPath); } catch { /* best effort */ }
+      removePrivateTempDir(listDir);
       resolve(null);
       return;
     }
@@ -231,7 +230,7 @@ function runAttributeReader(executable: string, filePaths: string[]): Promise<st
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { fs.unlinkSync(listPath); } catch { /* best effort */ }
+      removePrivateTempDir(listDir);
       resolve(value);
     };
 

@@ -23,13 +23,20 @@ jobs:
     # Pinned to windows-2022 for the same reason as windows-package.yml: the
     # current windows-latest image breaks better-sqlite3's native build.
     runs-on: windows-2022
+    # Least privilege: the steps only check out the code, restore the npm cache
+    # (which uses the runner's cache token, not GITHUB_TOKEN), run tests and
+    # write the job summary file. Nothing writes to the repository or its API.
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -64,9 +71,14 @@ jobs:
       - name: Acceptance summary
         if: always()
         shell: pwsh
+        # The probe's outputs reach the script as environment variables, not
+        # pasted into its text, so nothing they contain can run as code.
+        env:
+          CFAPI_RESULT: ${{ steps.cfapi.outputs.result }}
+          CFAPI_DETAIL: ${{ steps.cfapi.outputs.detail }}
         run: |
-          $result = "${{ steps.cfapi.outputs.result }}"
-          $detail = "${{ steps.cfapi.outputs.detail }}"
+          $result = $env:CFAPI_RESULT
+          $detail = $env:CFAPI_DETAIL
           if (-not $result) { $result = 'NOT_RUN' }
 
           $lines = @()

@@ -13,11 +13,31 @@ export interface AboutMetadata {
   copyright: string;
   copyrightNote: string;
   developerName: string;
+  // The source commit the app was built from (scripts/build.mjs).
+  build?: BuildInfo;
   feedback: {
     text: string;
     email: string;
     mailtoUrl: string;
   };
+}
+
+export interface BuildInfo {
+  commit: string;
+  dirty: boolean;
+}
+
+export function getBuildInfo(): BuildInfo | undefined {
+  try {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const info = JSON.parse(fs.readFileSync(path.join(dir, 'build-info.json'), 'utf-8'));
+    if (typeof info.commit === 'string' && /^[0-9a-f]{7,40}$|^unknown$/.test(info.commit)) {
+      return { commit: info.commit, dirty: info.dirty === true };
+    }
+  } catch {
+    // Run from the sources (tests): no build info.
+  }
+  return undefined;
 }
 
 export function getPackageVersion(): string {
@@ -67,6 +87,7 @@ export function getAboutMetadata(): AboutMetadata {
     copyright: getCopyrightText(),
     copyrightNote: 'MetinBul’un kaynak kodu, görsel kimliği ve dağıtım paketleri üzerindeki haklar saklıdır.',
     developerName: DEVELOPER_NAME,
+    build: getBuildInfo(),
     feedback: {
       text: 'MetinBul ile ilgili hata bildirimlerinizi, önerilerinizi ve kullanım deneyiminizi paylaşabilirsiniz.',
       email: FEEDBACK_EMAIL,

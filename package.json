@@ -1,7 +1,7 @@
 {
   "name": "metinbul",
   "productName": "MetinBul",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "DOC, DOCX, PDF ve UDF belgelerinde yerel metin arama utility'si",
   "main": "dist/main.js",
   "type": "module",
@@ -13,6 +13,8 @@
     "package:mac": "npm run build && electron-builder --mac --publish=never",
     "package:win": "npm run build && electron-builder --win --publish=never",
     "release:mac": "node scripts/mac-release.mjs",
+    "security:secrets": "node scripts/security/scan-secrets.mjs",
+    "security:audit": "npm audit --audit-level=critical && npm audit --omit=dev --audit-level=info && npm audit --json | node scripts/security/audit-electron.mjs",
     "package": "npm run package:mac"
   },
   "keywords": [
@@ -27,20 +29,19 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "adm-zip": "^0.5.16",
-    "better-sqlite3": "^13.0.3",
-    "fast-xml-parser": "^5.4.1",
+    "better-sqlite3": "npm:better-sqlite3-multiple-ciphers@^13.0.3",
+    "fast-xml-parser": "^5.12.0",
     "mammoth": "^1.11.0",
     "pdf-parse": "^2.4.5",
     "word-extractor": "^1.0.4"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.2",
     "@types/adm-zip": "^0.5.7",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.0",
     "@types/pdf-parse": "^1.1.5",
-    "electron": "^43.4.1",
+    "adm-zip": "^0.6.1",
+    "electron": "^43.8.8",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "png-to-ico": "^3.0.2",
@@ -52,6 +53,7 @@
     "productName": "MetinBul",
     "compression": "maximum",
     "npmRebuild": false,
+    "afterPack": "scripts/electron-fuses.cjs",
     "directories": {
       "output": "release"
     },

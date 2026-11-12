@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, nativeTheme, shell, clipboard, dialog, globalShortcut, screen, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, nativeTheme, shell, clipboard, dialog, globalShortcut, screen, session, Tray, type IpcMainInvokeEvent } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -8,7 +8,7 @@ import { isMacosOcrAvailable, OCR_BUDGET_MS } from '../ocr/ocr.js';
 import { checkWindowsOcr, installWindowsTurkishOcr } from '../ocr/windows-ocr.js';
 import { IndexProgress } from '../search/indexer.js';
 import { IndexCounts, SearchService } from './search-service.js';
-import { getAboutMetadata, getFeedbackMailto, getPackageVersion } from './about-info.js';
+import { FEEDBACK_EMAIL, getAboutMetadata, getFeedbackMailto, getPackageVersion } from './about-info.js';
 import { checkForUpdates, UpdateCheckResult } from './updater.js';
 import { AppTheme, DEFAULT_THEME, getPanelBackgroundColor, getThemeBackgroundColor, isValidTheme } from '../shared/theme.js';
 import { formatAcceleratorForDisplay, getDefaultAccelerator, isValidAccelerator, conflictsWithScreenReader, SCREEN_READER_CONFLICT_MESSAGE } from './quick-search-shortcut.js';
@@ -24,12 +24,64 @@ import {
   AUTO_INDEX_INTERVAL_MS
 } from './startup-settings.js';
 import { nextPanelHeight } from '../shared/quick-search-model.js';
+import {
+  absolutePath,
+  boundedString,
+  findForbiddenSwitch,
+  hasOpenableExtension,
+  isAllowedExternalUrl,
+  isOpenableDocument,
+  isSearchAreaType,
+  isSearchScopeMode,
+  isTrustedRendererUrl,
+  MAX_CLIPBOARD_LENGTH,
+  MAX_QUERY_LENGTH
+} from './security.js';
+import { removeStalePrivateTempFiles } from '../shared/private-temp.js';
+import { prepareDatabaseKey } from '../db/encryption.js';
+import { encryptOnWorker, indexKeyProtector } from './index-key.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const iconPath = path.join(__dirname, 'assets/icon.icns');
+const rendererDir = path.join(__dirname, 'renderer');
 
 app.name = 'MetinBul';
+
+// A packaged macOS MetinBul holds the user's folder permissions. Started with
+// a switch that would let another program drive or debug it (a DevTools port
+// into its pages, say), it refuses to start rather than hand that over. See
+// FORBIDDEN_SWITCHES; the Electron fuses cover the Node.js side.
+if (app.isPackaged && process.platform === 'darwin') {
+  const forbidden = findForbiddenSwitch(process.argv);
+  if (forbidden) {
+    console.error(`[MetinBul] Refusing to start with --${forbidden}.`);
+    process.exit(1);
+  }
+}
+
+// Files MetinBul creates -- the index and its -wal/-shm files, Chromium's
+// profile files, temporary OCR files -- are readable by this user only.
+if (process.platform !== 'win32') process.umask(0o077);
+
+// Every MetinBul window runs its page in Chromium's sandbox (sandbox: true
+// in each window's webPreferences): a renderer has no Node.js and no file
+// system, only the API the preload script hands it. app.enableSandbox() is
+// deliberately not called as well: combined with a --no-sandbox switch --
+// which Windows users pass to get around GPU or sandbox trouble -- it makes
+// the app exit with an access violation at start (measured on windows-2022,
+// Electron 43.8.8). No other web contents can be created anyway (see below).
+
+// MetinBul's windows only ever show its own pages. A navigation, a new window
+// or an embedded <webview> would put some other page in a window that has
+// MetinBul's API, so all three are refused. (loadFile is not a navigation
+// in this sense and is unaffected.)
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-navigate', event => event.preventDefault());
+  contents.on('will-redirect', event => event.preventDefault());
+  contents.on('will-attach-webview', event => event.preventDefault());
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
 
 let mainWindow: BrowserWindow | null = null;
 // Windows' notification area icon; see createTray.
@@ -37,6 +89,13 @@ let tray: Tray | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
 let registeredQuickSearchAccelerator: string | null = null;
 let db: AppDatabase | null = null;
+// The index key (src/db/encryption.ts), settled at start before anything
+// opens the index; undefined while the index stays plain. Nothing may open
+// the index before indexReady: until then it may still be being encrypted.
+let indexKeyHex: string | undefined;
+let indexReady = false;
+// A second launch that arrived while the index was being prepared.
+let reopenRequested = false;
 let isIndexing = false;
 let currentIndexingWorker: Worker | null = null;
 let currentTheme: AppTheme = DEFAULT_THEME;
@@ -133,7 +192,12 @@ if (!gotSingleInstanceLock) {
   app.on('second-instance', () => {
     // Relaunching an already-running MetinBul (Dock, Spotlight, `open -a`)
     // is a deliberate request for the real UI -- not just the background
-    // shortcut -- so something must appear rather than nothing.
+    // shortcut -- so something must appear rather than nothing. While the
+    // index is still being prepared it waits for that.
+    if (!indexReady) {
+      reopenRequested = true;
+      return;
+    }
     handleReopen(false);
   });
 }
@@ -307,8 +371,9 @@ function getDbPath(): string {
 }
 
 function getDb(): AppDatabase {
+  if (!indexReady) throw new Error('The index is not open yet.');
   if (!db) {
-    db = new AppDatabase(getDbPath());
+    db = new AppDatabase(getDbPath(), { keyHex: indexKeyHex });
   }
   return db;
 }
@@ -316,7 +381,7 @@ function getDb(): AppDatabase {
 function getSearchService(): SearchService {
   if (!searchService) {
     searchService = new SearchService(cancelledSearch => new Worker(path.join(__dirname, 'search-worker.js'), {
-      workerData: { dbPath: getDbPath(), cancelledSearch }
+      workerData: { dbPath: getDbPath(), keyHex: indexKeyHex, cancelledSearch }
     }));
   }
   return searchService;
@@ -421,7 +486,10 @@ function openSettingsWindow(section: SettingsSection = 'general', options: { che
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false
+      sandbox: true,
+      // Chromium's spell checker would download dictionaries and has no use
+      // in a search field.
+      spellcheck: false
     }
   });
   settingsWindow = win;
@@ -615,7 +683,10 @@ function createWindow(options: { startMinimized?: boolean } = {}) {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false
+      sandbox: true,
+      // Chromium's spell checker would download dictionaries and has no use
+      // in a search field.
+      spellcheck: false
     }
   });
 
@@ -717,7 +788,10 @@ function createQuickSearchWindow(): BrowserWindow {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
+      // Chromium's spell checker would download dictionaries and has no use
+      // in a search field.
+      spellcheck: false,
       // Measured on macOS 27: a panel's page can report itself hidden
       // (document.visibilityState) while it is on screen and focused, and
       // Chromium then throttles its timers -- the typing debounce stalls for
@@ -966,22 +1040,69 @@ function registerQuickSearchShortcut(accelerator: string): boolean {
 // so the windows can keep them quiet.
 type IndexTrigger = 'user' | 'auto';
 
-function triggerIndexing(trigger: IndexTrigger = 'user') {
+// What the indexer worker reports about the document it is reading.
+interface IndexedFileRecord {
+  path: string;
+  filename: string;
+  extension: string;
+  mtime: number;
+  size: number;
+}
+
+function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?: boolean } = {}) {
   if (isIndexing) return;
   isIndexing = true;
   invalidateIndexCounts();
 
   const dbPath = getDbPath();
   const worker = new Worker(path.join(__dirname, 'indexer-worker.js'), {
+    // A document that makes a parser allocate without end ends this worker
+    // (ERR_WORKER_OUT_OF_MEMORY, handled by the watchdog below) instead of
+    // taking the whole app down with it.
+    // Under Electron every thread of the process shares one ~4 GiB V8 heap
+    // cage, so a larger limit is never reached: the whole app would abort
+    // first. 2 GiB is reached, and fails only the worker (measured with
+    // Electron 43.8.8's own Node).
+    resourceLimits: { maxOldGenerationSizeMb: 2048 },
     // An automatic pass leaves unchanged unreadable files alone: re-reading
     // them every ten minutes would only fail again. A user's update still
     // retries them.
-    workerData: { dbPath, retryFailed: trigger === 'user', ocr: ocrWorkerOptions() }
+    workerData: { dbPath, keyHex: indexKeyHex, retryFailed: options.retryFailed ?? trigger === 'user', ocr: ocrWorkerOptions() }
   });
   currentIndexingWorker = worker;
 
-  worker.on('message', (msg: { type: 'progress'; progress: IndexProgress } | { type: 'done'; summary: { skippedDataless: number } } | { type: 'error'; message: string }) => {
+  // Watchdog: the worker announces each document before reading it, with how
+  // long that may take. One that overruns -- a malformed or hostile file that
+  // sends a parser into an endless loop -- stops this update; so does one the
+  // worker dies on (out of memory). Either way that document is recorded as
+  // unreadable once the worker is gone, and the update starts again past it.
+  let reading: IndexedFileRecord | null = null;
+  let stuckOn: IndexedFileRecord | null = null;
+  let finished = false;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  const disarm = () => {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = null;
+  };
+
+  worker.on('message', (msg: { type: 'progress'; progress: IndexProgress } | { type: 'reading'; file: IndexedFileRecord; limitMs: number } | { type: 'done'; summary: { skippedDataless: number } } | { type: 'error'; message: string }) => {
+    if (msg.type === 'reading') {
+      reading = msg.file;
+      disarm();
+      watchdog = setTimeout(() => {
+        stuckOn = reading;
+        // The document's name stays out of the log, as search terms do.
+        console.error(`[MetinBul] A document took longer than ${Math.round(msg.limitMs / 60000)} min to read; stopping this update and skipping that document from now on.`);
+        void worker.terminate();
+      }, msg.limitMs);
+      return;
+    }
+    if (msg.type === 'done' || msg.type === 'error') finished = true;
     if (msg.type === 'progress') {
+      // Progress comes between documents only: the last one read is done.
+      reading = null;
+      disarm();
+      if (msg.progress.status === 'completed') disarm();
       if (msg.progress.status === 'completed') {
         // Recorded before the event goes out, so a surface that refreshes on
         // "completed" already reads the new "Son güncelleme" time.
@@ -1014,6 +1135,7 @@ function triggerIndexing(trigger: IndexTrigger = 'user') {
   });
 
   worker.on('error', (error) => {
+    if (reading) stuckOn = reading;
     console.error('Indexer worker crashed:', error);
     lastIndexProgress = null;
     broadcast('index:progress', {
@@ -1026,10 +1148,29 @@ function triggerIndexing(trigger: IndexTrigger = 'user') {
   });
 
   worker.on('exit', () => {
+    disarm();
+    // A parser that leaves a promise that never settles lets the worker's
+    // event loop run dry: the worker just ends, mid-document, before the
+    // watchdog fires. Measured on a real .doc with word-extractor 1.0.4.
+    if (!finished && reading && !stuckOn && !isQuitting) stuckOn = reading;
     isIndexing = false;
     currentIndexingWorker = null;
     lastIndexProgress = null;
     invalidateIndexCounts();
+    const quarantined = stuckOn;
+    if (quarantined && !isQuitting) {
+      // Written only now, with the worker's connection gone.
+      try {
+        getDb().markDocumentUnreadable(quarantined);
+      } catch (err) {
+        console.error('[MetinBul] Could not record the unreadable document:', err);
+      }
+      // The same update goes on, past that document: without retrying
+      // unreadable files, so each stuck document is met once. It shows in
+      // Settings › İndeks among the unreadable documents.
+      triggerIndexing(trigger, { retryFailed: false });
+      return;
+    }
     // Whoever started this update, the next automatic one is a full interval
     // away: never on top of a running pass, never right after a manual one.
     scheduleAutoIndex();
@@ -1057,13 +1198,109 @@ function runAutoIndex() {
   }
 }
 
-app.whenReady().then(() => {
+// Every request from a renderer comes through here. It is served only when it
+// comes from the top frame of one of MetinBul's own windows showing one of
+// its own pages (see isTrustedRendererUrl); anything else -- a frame inside a
+// page, a page that somehow got navigated elsewhere -- is refused.
+function isTrustedSender(event: IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame;
+  if (!frame || frame.parent !== null) return false;
+  if (!BrowserWindow.fromWebContents(event.sender)) return false;
+  return isTrustedRendererUrl(frame.url, rendererDir);
+}
+
+function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      console.error(`[MetinBul] Refused ${channel}: the request did not come from a MetinBul page.`);
+      throw new Error('Untrusted sender');
+    }
+    return listener(event, ...args);
+  });
+}
+
+// Whether a renderer may have this file opened or shown: a document in the
+// index, of a type MetinBul indexes (see isOpenableDocument).
+function isOpenableIndexedDocument(value: unknown): value is string {
+  if (!isOpenableDocument(value, documentPath => getDb().hasDocument(documentPath))) return false;
+  // What would really open: a link named "Dilekce.pdf" may lead to a program
+  // or a script, which shell.openPath would run.
+  try {
+    const target = fs.realpathSync(value);
+    return fs.statSync(target).isFile() && hasOpenableExtension(target);
+  } catch {
+    return false;
+  }
+}
+
+// Opens the way to the index: its key, and an existing plain index encrypted
+// on a worker thread (once, after an update; a few seconds for a large one).
+// Returns false when MetinBul cannot open its index at all and must quit.
+async function prepareIndex(): Promise<{ ok: boolean; keyLostNotice?: string }> {
+  const preparation = await prepareDatabaseKey({
+    dbPath: getDbPath(),
+    protector: indexKeyProtector(),
+    encryptExisting: encryptOnWorker(__dirname)
+  });
+  switch (preparation.status) {
+    case 'new':
+    case 'encrypted':
+    case 'migrated':
+      indexKeyHex = preparation.keyHex;
+      return { ok: true };
+    case 'key-lost':
+      indexKeyHex = preparation.keyHex;
+      console.error(`[MetinBul] The index could not be opened (${preparation.reason}); it was moved aside and a new one is started.`);
+      return {
+        ok: true,
+        keyLostNotice: 'MetinBul dizininin anahtarına ulaşılamadı (örneğin Anahtar Zinciri sıfırlanmış ya da profil başka bir bilgisayardan kopyalanmış olabilir). ' +
+          'Belgelerinize hiçbir şey olmadı; yalnızca arama dizini ve MetinBul ayarları yeniden oluşturulacak. ' +
+          `Eski dizin silinmedi, şuraya taşındı: ${preparation.movedTo}`
+      };
+    case 'migration-failed':
+      console.error(`[MetinBul] Encrypting the index failed; it stays as it was and is tried again at the next start: ${preparation.error}`);
+      return { ok: true };
+    case 'no-protector':
+      console.error('[MetinBul] The system cannot seal an index key here; the index stays unencrypted.');
+      return { ok: true };
+    case 'protector-unavailable':
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'MetinBul',
+        message: 'MetinBul arama dizinini şu anda açamıyor.',
+        detail: 'Dizinin anahtarını koruyan sistem bileşenine (macOS Anahtar Zinciri / Windows) şu anda ulaşılamıyor. ' +
+          'Dizine ve belgelerinize dokunulmadı. Bilgisayarınıza oturum açtığınızdan emin olup MetinBul\'u yeniden başlatın.'
+      });
+      return { ok: false };
+  }
+}
+
+app.whenReady().then(async () => {
   // A losing second instance has already called app.quit() above; bail out
   // before it can open the profile DB or steal the shortcut registration.
   if (!gotSingleInstanceLock) return;
 
+  // Electron grants a page's permission requests (camera, microphone,
+  // location, notifications, clipboard reads, opening other programs) unless
+  // told otherwise. MetinBul's pages need none of them.
+  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+
+  // OCR job folders a crash or a forced quit left behind (see private-temp.ts).
+  removeStalePrivateTempFiles();
+
   if (process.platform === 'darwin') {
     app.dock?.setIcon(nativeImage.createFromPath(iconPath));
+  }
+
+  const index = await prepareIndex();
+  if (!index.ok) {
+    app.quit();
+    return;
+  }
+  indexReady = true;
+  if (index.keyLostNotice) {
+    void dialog.showMessageBox({ type: 'warning', title: 'MetinBul', message: 'Arama dizini yeniden oluşturulacak.', detail: index.keyLostNotice });
   }
 
   const appDb = getDb();
@@ -1100,22 +1337,24 @@ app.whenReady().then(() => {
   const INACCESSIBLE_FILE_ERROR = 'Bu dosyaya şu anda erişilemiyor. Dosya taşınmış, silinmiş veya ilgili sürücü bağlı olmayabilir.';
 
   // IPC Handlers
-  ipcMain.handle('app:shouldShowOnboarding', () => {
+  handle('app:shouldShowOnboarding', () => {
     return pendingOnboarding;
   });
 
-  ipcMain.handle('app:completeOnboarding', async (
+  handle('app:completeOnboarding', async (
     _event,
     mode: 'all' | 'selected',
     folders?: string[],
     options?: { startAtLogin?: boolean }
   ) => {
     try {
+      if (!isSearchScopeMode(mode)) return false;
       appDb.setSearchScopeMode(mode);
       if (mode === 'selected' && Array.isArray(folders)) {
-        for (const folder of folders) {
-          if (typeof folder === 'string' && folder) {
-            appDb.addSearchArea(folder, 'include');
+        for (const folder of folders.slice(0, 1000)) {
+          const folderPath = absolutePath(folder);
+          if (folderPath) {
+            appDb.addSearchArea(folderPath, 'include');
           }
         }
       }
@@ -1142,22 +1381,23 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:getDocumentCount', () => getSearchService().documentCount());
+  handle('app:getDocumentCount', () => getSearchService().documentCount());
 
-  ipcMain.handle('app:getLastSkippedDataless', () => {
+  handle('app:getLastSkippedDataless', () => {
     const value = appDb.getAppSetting('last_skipped_dataless_count');
     const parsed = value ? Number.parseInt(value, 10) : 0;
     return Number.isFinite(parsed) ? parsed : 0;
   });
 
-  ipcMain.handle('app:rescan', async () => {
+  handle('app:rescan', async () => {
     await triggerIndexing();
     return true;
   });
 
-  ipcMain.handle('app:search', async (event, query: string, sort?: string) => {
+  handle('app:search', async (event, query: string, sort?: string) => {
     const validSort = sort === 'oldest' || sort === 'relevance' ? sort : 'modified';
-    const text = typeof query === 'string' ? query : '';
+    // A real query is a few words; a pasted paragraph is cut to its start.
+    const text = typeof query === 'string' ? query.slice(0, MAX_QUERY_LENGTH) : '';
     const outcome = await getSearchService().search(event.sender.id, text, validSort, 100);
     if (outcome.state === 'search_error') {
       lastSearchError = { at: Date.now(), message: outcome.error ?? 'bilinmeyen hata' };
@@ -1167,12 +1407,13 @@ app.whenReady().then(() => {
     return outcome;
   });
 
-  ipcMain.handle('app:getSearchScopeMode', () => {
+  handle('app:getSearchScopeMode', () => {
     return appDb.getSearchScopeMode();
   });
 
-  ipcMain.handle('app:setSearchScopeMode', async (_event, mode: 'all' | 'selected') => {
+  handle('app:setSearchScopeMode', async (_event, mode: 'all' | 'selected') => {
     try {
+      if (!isSearchScopeMode(mode)) return false;
       appDb.setSearchScopeMode(mode);
       invalidateIndexCounts();
       triggerIndexing();
@@ -1183,13 +1424,16 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:getSearchAreas', () => {
+  handle('app:getSearchAreas', () => {
     return appDb.getSearchAreas();
   });
 
-  ipcMain.handle('app:addSearchArea', async (_event, folderPath: string, type: 'include' | 'exclude') => {
+  handle('app:addSearchArea', async (_event, value: unknown, type: unknown) => {
     try {
-      if (!folderPath || typeof folderPath !== 'string') return false;
+      // Folders come from the folder picker, so they exist and are folders.
+      const folderPath = absolutePath(value);
+      if (!folderPath || !isSearchAreaType(type)) return false;
+      if (!fs.statSync(folderPath, { throwIfNoEntry: false })?.isDirectory()) return false;
       appDb.addSearchArea(folderPath, type);
       invalidateIndexCounts();
       triggerIndexing();
@@ -1200,9 +1444,10 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:removeSearchArea', async (_event, folderPath: string) => {
+  handle('app:removeSearchArea', async (_event, value: unknown) => {
     try {
-      if (!folderPath || typeof folderPath !== 'string') return false;
+      const folderPath = absolutePath(value);
+      if (!folderPath) return false;
       appDb.removeSearchArea(folderPath);
       invalidateIndexCounts();
       triggerIndexing();
@@ -1213,7 +1458,7 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:selectFolder', async (event) => {
+  handle('app:selectFolder', async (event) => {
     // Parented to whichever window asked (Settings on macOS, the main window
     // on Windows) -- macOS has no main window to hang the sheet on any more.
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -1230,9 +1475,11 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
-  ipcMain.handle('app:openFile', async (_event, filePath: string) => {
+  handle('app:openFile', async (_event, filePath: unknown) => {
     try {
-      if (!filePath || !fs.existsSync(filePath)) {
+      // Only a document from the index: shell.openPath runs whatever it is
+      // given the way a double-click would, programs and scripts included.
+      if (!isOpenableIndexedDocument(filePath) || !fs.existsSync(filePath)) {
         return { success: false, error: INACCESSIBLE_FILE_ERROR };
       }
       const error = await shell.openPath(filePath);
@@ -1245,9 +1492,9 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:showInFolder', (_event, filePath: string) => {
+  handle('app:showInFolder', (_event, filePath: unknown) => {
     try {
-      if (!filePath || !fs.existsSync(filePath)) {
+      if (!isOpenableIndexedDocument(filePath) || !fs.existsSync(filePath)) {
         return { success: false, error: INACCESSIBLE_FILE_ERROR };
       }
       shell.showItemInFolder(filePath);
@@ -1257,23 +1504,24 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:getAboutInfo', () => {
+  handle('app:getAboutInfo', () => {
     return getAboutMetadata();
   });
 
-  ipcMain.handle('app:openExternal', async (_event, url: string) => {
+  handle('app:openExternal', async (_event, url: unknown) => {
     try {
-      if (url.startsWith('https://') || url.startsWith('http://') || url.startsWith('mailto:')) {
-        await shell.openExternal(url);
+      // MetinBul's releases page and a mail to its feedback address only.
+      if (isAllowedExternalUrl(url, FEEDBACK_EMAIL)) {
+        await shell.openExternal(url as string);
         return { success: true };
       }
-      return { success: false, error: 'Invalid URL protocol' };
+      return { success: false, error: 'Bu bağlantı açılamaz.' };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
   });
 
-  ipcMain.handle('app:sendFeedback', async () => {
+  handle('app:sendFeedback', async () => {
     const mailtoUrl = getFeedbackMailto();
     if (mailtoUrl) {
       await shell.openExternal(mailtoUrl);
@@ -1282,9 +1530,10 @@ app.whenReady().then(() => {
     return { success: false, error: 'Feedback target is not configured' };
   });
 
-  ipcMain.handle('app:copyToClipboard', (_event, text: string) => {
+  handle('app:copyToClipboard', (_event, value: unknown) => {
     try {
-      if (typeof text === 'string') {
+      const text = boundedString(value, MAX_CLIPBOARD_LENGTH);
+      if (text !== null) {
         clipboard.writeText(text);
         return { success: true };
       }
@@ -1294,21 +1543,22 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('app:getTheme', () => {
+  handle('app:getTheme', () => {
     return currentTheme;
   });
 
-  ipcMain.handle('app:setTheme', (_event, theme: AppTheme) => {
+  handle('app:setTheme', (_event, theme: unknown) => {
+    if (!isValidTheme(theme)) return false;
     setAppTheme(theme);
     return true;
   });
 
-  ipcMain.handle('app:checkForUpdates', async (_event) => {
+  handle('app:checkForUpdates', async (_event) => {
     const version = getPackageVersion();
     return checkForUpdates(version);
   });
 
-  ipcMain.handle('app:getQuickSearchShortcut', () => {
+  handle('app:getQuickSearchShortcut', () => {
     const accelerator = appDb.getAppSetting('quick_search_shortcut') || getDefaultAccelerator(process.platform);
     const registered = registeredQuickSearchAccelerator === accelerator;
     return {
@@ -1319,7 +1569,9 @@ app.whenReady().then(() => {
     };
   });
 
-  ipcMain.handle('app:setQuickSearchShortcut', (_event, accelerator: string) => {
+  handle('app:setQuickSearchShortcut', (_event, value: unknown) => {
+    const accelerator = boundedString(value, 100);
+    if (!accelerator) return { success: false, error: 'Geçersiz kısayol.' };
     // Reported separately from a plain syntax error: the user needs to know
     // *why* this particular combination is refused (spec §8).
     if (conflictsWithScreenReader(accelerator)) {
@@ -1341,11 +1593,11 @@ app.whenReady().then(() => {
     return { success: false, error: 'Bu kısayol başka bir uygulama tarafından kullanılıyor. Farklı bir kısayol deneyin.' };
   });
 
-  ipcMain.handle('app:getStartupSettings', () => {
+  handle('app:getStartupSettings', () => {
     return getStartupSettingsPayload();
   });
 
-  ipcMain.handle('app:setStartAtLogin', (_event, enabled: boolean) => {
+  handle('app:setStartAtLogin', (_event, enabled: boolean) => {
     if (!isStartAtLoginSupported(process.platform)) {
       return {
         success: false,
@@ -1381,7 +1633,7 @@ app.whenReady().then(() => {
     return { success: true, settings };
   });
 
-  ipcMain.handle('app:setKeepRunningInBackground', (_event, enabled: boolean) => {
+  handle('app:setKeepRunningInBackground', (_event, enabled: boolean) => {
     if (!canStayResident()) {
       return {
         success: false,
@@ -1397,7 +1649,7 @@ app.whenReady().then(() => {
     return { success: true, settings: getStartupSettingsPayload() };
   });
 
-  ipcMain.handle('app:setAutoIndexEnabled', (_event, enabled: boolean) => {
+  handle('app:setAutoIndexEnabled', (_event, enabled: boolean) => {
     autoIndexEnabled = enabled === true;
     appDb.setAppSetting('auto_index_enabled', serializeBooleanSetting(autoIndexEnabled));
     scheduleAutoIndex();
@@ -1405,7 +1657,7 @@ app.whenReady().then(() => {
   });
 
   // Takes effect from the next update; documents already read keep their text.
-  ipcMain.handle('app:setOcrEnabled', (_event, enabled: boolean) => {
+  handle('app:setOcrEnabled', (_event, enabled: boolean) => {
     ocrEnabled = enabled === true;
     appDb.setAppSetting('ocr_enabled', serializeBooleanSetting(ocrEnabled));
     return getIndexStatusPayload();
@@ -1413,21 +1665,21 @@ app.whenReady().then(() => {
 
   // Asks Windows for the Turkish OCR component (the user approves the
   // administrator prompt); takes effect from the next update.
-  ipcMain.handle('app:installWindowsTurkishOcr', async () => {
+  handle('app:installWindowsTurkishOcr', async () => {
     if (process.platform !== 'win32') return { success: false, status: await getIndexStatusPayload() };
     const installed = await installWindowsTurkishOcr();
     await refreshOcrAvailability();
     return { success: installed && ocrAvailable, status: await getIndexStatusPayload() };
   });
 
-  ipcMain.handle('app:hideQuickSearch', (_event, reason?: string) => {
+  handle('app:hideQuickSearch', (_event, reason?: string) => {
     hideQuickSearch(reason === 'open' ? 'open' : 'dismiss');
     return true;
   });
 
   // The panel reports the height its content needs; the window follows,
   // between the compact search field and the per-display maximum.
-  ipcMain.handle('quick-search:setHeight', (event, contentHeight: number, allowShrink: boolean) => {
+  handle('quick-search:setHeight', (event, contentHeight: number, allowShrink: boolean) => {
     const win = quickSearchWindow;
     if (!win || win.isDestroyed() || event.sender !== win.webContents) return false;
     if (typeof contentHeight !== 'number' || !Number.isFinite(contentHeight)) return false;
@@ -1449,9 +1701,9 @@ app.whenReady().then(() => {
   // Right-click on a result. The chosen action goes back to the panel, which
   // runs it through the same path as Enter / Cmd+Enter (including the error
   // shown when a file has gone missing).
-  ipcMain.handle('quick-search:showResultMenu', (event, filePath: string) => {
+  handle('quick-search:showResultMenu', (event, filePath: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed() || typeof filePath !== 'string' || !filePath) return false;
+    if (!win || win.isDestroyed() || !isOpenableIndexedDocument(filePath)) return false;
     const send = (action: 'open' | 'reveal') => {
       if (!win.isDestroyed()) win.webContents.send('quick-search:resultAction', { action, path: filePath });
     };
@@ -1469,25 +1721,25 @@ app.whenReady().then(() => {
     return true;
   });
 
-  ipcMain.handle('app:openSettings', (_event, section?: string) => {
+  handle('app:openSettings', (_event, section?: string) => {
     openSettingsWindow(isSettingsSection(section) ? section : 'general');
     return true;
   });
 
-  ipcMain.handle('app:getIndexStatus', () => {
+  handle('app:getIndexStatus', () => {
     return getIndexStatusPayload();
   });
 
-  ipcMain.handle('app:getUnreadableDocuments', () => getSearchService().unreadableDocuments(200));
+  handle('app:getUnreadableDocuments', () => getSearchService().unreadableDocuments(200));
 
-  ipcMain.handle('app:getUpdateInfo', () => {
+  handle('app:getUpdateInfo', () => {
     return latestUpdateInfo;
   });
 
   // One-time migration: the theme used to live only in the main window's
   // localStorage. The first surface to load hands it over if the main
   // process has never stored one; afterwards app_settings is the source.
-  ipcMain.handle('app:adoptLegacyTheme', (_event, theme: unknown) => {
+  handle('app:adoptLegacyTheme', (_event, theme: unknown) => {
     if (appDb.getAppSetting('theme') === undefined && isValidTheme(theme)) {
       setAppTheme(theme);
     }
@@ -1539,6 +1791,9 @@ app.whenReady().then(() => {
   if (!usesUtilityShell && !launchedAtLogin) {
     scheduleUpdateCheck(3000);
   }
+
+  // A second launch that came while the index was being prepared.
+  if (reopenRequested) handleReopen(false);
 
   app.on('activate', (_event, hasVisibleWindows) => {
     // A visible panel already answers the request; handleReopen also covers

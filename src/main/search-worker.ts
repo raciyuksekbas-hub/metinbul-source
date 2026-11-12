@@ -5,9 +5,9 @@ import { AppDatabase } from '../db/database.js';
 import { runSearch } from '../search/search-outcome.js';
 import type { IndexCounts, ReadRequest, ReadResponse } from './search-service.js';
 
-const { dbPath, cancelledSearch } = workerData as { dbPath: string; cancelledSearch: SharedArrayBuffer };
+const { dbPath, keyHex, cancelledSearch } = workerData as { dbPath: string; keyHex?: string; cancelledSearch: SharedArrayBuffer };
 const cancelled = new Int32Array(cancelledSearch);
-const db = new AppDatabase(dbPath, { queryOnly: true });
+const db = new AppDatabase(dbPath, { queryOnly: true, keyHex });
 
 function answer(request: ReadRequest): unknown {
   if (request.kind === 'search') {

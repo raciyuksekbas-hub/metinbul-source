@@ -58,7 +58,7 @@ describe('macOS panel behaviour (spec §10, §11, §31)', () => {
 
   it('dismisses itself when the user clicks into another app, but not for its own context menu', () => {
     expect(create()).toMatch(/win\.on\('blur', \(\) => \{\s*if \(!quickSearchMenuOpen\) hideQuickSearch\('blur'\);/);
-    expect(sliceFrom("ipcMain.handle('quick-search:showResultMenu'", 1200)).toMatch(/quickSearchMenuOpen = true;[\s\S]*?callback: \(\) => \{\s*quickSearchMenuOpen = false;/);
+    expect(sliceFrom("handle('quick-search:showResultMenu'", 1200)).toMatch(/quickSearchMenuOpen = true;[\s\S]*?callback: \(\) => \{\s*quickSearchMenuOpen = false;/);
   });
 });
 
@@ -86,13 +86,13 @@ describe('Dismissing the panel never quits, and hands focus back', () => {
   });
 
   it('opening a document lets that document take focus instead', () => {
-    expect(sliceFrom("ipcMain.handle('app:hideQuickSearch'", 300)).toContain("hideQuickSearch(reason === 'open' ? 'open' : 'dismiss')");
+    expect(sliceFrom("handle('app:hideQuickSearch'", 300)).toContain("hideQuickSearch(reason === 'open' ? 'open' : 'dismiss')");
   });
 });
 
 describe('Panel sizing', () => {
   it('grows with its content up to a per-display maximum, without jitter', () => {
-    const body = sliceFrom("ipcMain.handle('quick-search:setHeight'", 900);
+    const body = sliceFrom("handle('quick-search:setHeight'", 900);
     expect(body).toContain('nextPanelHeight(');
     expect(body).toContain('contentHeight * win.webContents.getZoomFactor()');
     expect(body).toContain('{ min: QUICK_SEARCH_COMPACT_HEIGHT, max: quickSearchMaxHeight }');
@@ -112,7 +112,7 @@ describe('Settings window and residency', () => {
   });
 
   it('parents the folder picker to whichever window asked for it', () => {
-    expect(sliceFrom("ipcMain.handle('app:selectFolder'", 700)).toContain('BrowserWindow.fromWebContents(event.sender)');
+    expect(sliceFrom("handle('app:selectFolder'", 700)).toContain('BrowserWindow.fromWebContents(event.sender)');
   });
 
   it('persists the theme in the main process so a windowless login launch keeps it', () => {
@@ -125,8 +125,8 @@ describe('Start at login is never registered behind the user’s back', () => {
   it('writes the login item only from the Settings toggle or the visible setup choice', () => {
     const writes = MAIN_TS.match(/app\.setLoginItemSettings\(/g) || [];
     expect(writes.length).toBe(2);
-    expect(sliceFrom("ipcMain.handle('app:setStartAtLogin'", 900)).toContain('app.setLoginItemSettings(');
-    expect(sliceFrom("ipcMain.handle('app:completeOnboarding'", 1600)).toMatch(/options && typeof options\.startAtLogin === 'boolean'/);
+    expect(sliceFrom("handle('app:setStartAtLogin'", 900)).toContain('app.setLoginItemSettings(');
+    expect(sliceFrom("handle('app:completeOnboarding'", 1600)).toMatch(/options && typeof options\.startAtLogin === 'boolean'/);
   });
 });
 

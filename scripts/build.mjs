@@ -8,6 +8,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
+function readBuildInfo() {
+  const git = args => execFileSync('git', args, { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  let commit = process.env.METINBUL_SOURCE_COMMIT || 'unknown';
+  let dirty = false;
+  try {
+    commit = git(['rev-parse', 'HEAD']);
+    // Tracked files that differ from the commit make the build not exactly it.
+    dirty = git(['status', '--porcelain', '--untracked-files=no']) !== '';
+  } catch {
+    // Not a git checkout.
+  }
+  return { commit, dirty };
+}
+
 async function build() {
   const distDir = path.join(rootDir, 'dist');
   if (fs.existsSync(distDir)) {
@@ -46,6 +60,17 @@ async function build() {
     target: 'node20',
     format: 'esm',
     outfile: path.join(distDir, 'search-worker.js'),
+    external: ['electron', 'better-sqlite3', 'pdf-parse', 'mammoth', 'word-extractor', 'adm-zip', 'fast-xml-parser']
+  });
+
+  // 2c. Build the index encryption worker (ESM, worker_threads entry point)
+  await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/main/encrypt-worker.ts')],
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    outfile: path.join(distDir, 'encrypt-worker.js'),
     external: ['electron', 'better-sqlite3', 'pdf-parse', 'mammoth', 'word-extractor', 'adm-zip', 'fast-xml-parser']
   });
 
@@ -115,6 +140,11 @@ async function build() {
       fs.copyFileSync(src, path.join(assetsDistDir, file));
     }
   }
+
+  // 8b. Which source this build was made from, shown in Settings › Hakkında so
+  // an installer can be traced back to its commit. A build from the source
+  // zip (no .git) can pass METINBUL_SOURCE_COMMIT.
+  fs.writeFileSync(path.join(distDir, 'build-info.json'), JSON.stringify(readBuildInfo(), null, 2) + '\n');
 
   // 9. macOS text recognition helper. electron-builder copies it to the app's
   // Resources/bin (mac.extraResources) and keeps it out of app.asar, where it

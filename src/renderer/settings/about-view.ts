@@ -38,7 +38,7 @@ export async function renderAboutView(container: HTMLElement, options: { checkUp
         <h2 class="about-title" id="about-title">
           <span class="logo-regular">Metin</span><span class="logo-bold">Bul</span>
         </h2>
-        <p class="about-version">Sürüm ${escapeHtml(about.version)}</p>
+        <p class="about-version">Sürüm ${escapeHtml(about.version)}${about.build ? ` · Derleme ${escapeHtml(String(about.build.commit).slice(0, 12))}${about.build.dirty ? ' (yerel değişiklikli)' : ''}` : ''}</p>
         <p class="about-description">${escapeHtml(about.shortDescription)}</p>
         <p class="settings-note">Geliştirici: ${escapeHtml(about.developerName)}</p>
       </section>

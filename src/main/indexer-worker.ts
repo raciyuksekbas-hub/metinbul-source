@@ -9,11 +9,13 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { AppDatabase } from '../db/database.js';
 import { indexAccessibleDocuments, IndexProgress, IndexSummary } from '../search/indexer.js';
+import type { ScannedFile } from '../scanner/scanner.js';
 import { createMacosOcrEngine } from '../ocr/ocr.js';
 import { createWindowsOcrEngine } from '../ocr/windows-ocr.js';
 
 interface WorkerData {
   dbPath: string;
+  keyHex?: string;
   // false for an automatic update: unchanged unreadable files are left alone.
   retryFailed?: boolean;
   // Set when text recognition is available and turned on. helperPath is the
@@ -23,18 +25,23 @@ interface WorkerData {
 
 type WorkerMessage =
   | { type: 'progress'; progress: IndexProgress }
+  | { type: 'reading'; file: ScannedFile; limitMs: number }
   | { type: 'done'; summary: IndexSummary }
   | { type: 'error'; message: string };
 
 async function run() {
-  const { dbPath, retryFailed, ocr } = workerData as WorkerData;
-  const db = new AppDatabase(dbPath);
+  const { dbPath, keyHex, retryFailed, ocr } = workerData as WorkerData;
+  const db = new AppDatabase(dbPath, { keyHex });
 
   try {
     const summary = await indexAccessibleDocuments(db, (progress) => {
       parentPort?.postMessage({ type: 'progress', progress } satisfies WorkerMessage);
     }, {
       retryFailed: retryFailed !== false,
+      onReading: (file, limitMs) => {
+        const { path, filename, extension, mtime, size } = file;
+        parentPort?.postMessage({ type: 'reading', file: { path, filename, extension, mtime, size }, limitMs } satisfies WorkerMessage);
+      },
       ocr: ocr
         ? { engine: ocr.helperPath ? createMacosOcrEngine(ocr.helperPath) : createWindowsOcrEngine(), budgetMs: ocr.budgetMs }
         : undefined

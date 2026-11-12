@@ -1,11 +1,11 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { AppDatabase, DocumentRecord, OcrState } from '../db/database.js';
-import { scanDirectories, isPathOrSubpath, isPathExcluded, listedDirectoryKey, ScanStats } from '../scanner/scanner.js';
+import { ScannedFile, scanDirectories, isPathOrSubpath, isPathExcluded, listedDirectoryKey, resolveExclusions, ScanStats } from '../scanner/scanner.js';
 import { ContentNotLocallyAvailableError } from '../scanner/windows-availability.js';
 import { extract, extractPdfPageTexts } from '../extractors/index.js';
 import { discoverSearchRoots } from '../scanner/roots.js';
-import { OcrEngine } from '../ocr/ocr.js';
+import { OcrEngine, ocrTimeoutMs } from '../ocr/ocr.js';
 
 export interface IndexProgress {
   total: number;
@@ -46,6 +46,20 @@ export interface IndexOptions {
   // long one update may spend on it: about half a second a page, so a first
   // run over a few thousand scanned pages is spread over several updates.
   ocr?: { engine: OcrEngine; budgetMs: number };
+  // Told right before a document is read, with how long reading it may take
+  // at most. The main process stops an update whose document overruns this
+  // (a malformed or hostile file can send a parser into an endless loop) and
+  // records that document as unreadable, so the next update gets past it.
+  onReading?: (file: ScannedFile, limitMs: number) => void;
+}
+
+// How long reading one document's text layer may take: five minutes, plus a
+// minute per 50 MB for a large file on a slow network share or VPN (a 512 MB
+// PDF gets 16 minutes). The watchdog in the main process stops a read
+// that overruns this -- meant for a parser stuck in a loop, not a slow disk.
+export const DOCUMENT_READ_LIMIT_MS = 5 * 60 * 1000;
+export function documentReadLimitMs(sizeBytes: number): number {
+  return DOCUMENT_READ_LIMIT_MS + Math.ceil(Math.max(0, sizeBytes) / (50 * 1024 * 1024)) * 60 * 1000;
 }
 
 // A page with less text than this is treated as scanned and read by text
@@ -147,7 +161,8 @@ export async function indexFolders(
     skippedDatalessPaths: new Set(),
     listedDirectories: new Map(),
     cloudOnlyDirectories: new Set(),
-    unansweredDirectories: new Set()
+    unansweredDirectories: new Set(),
+    refusedPaths: new Set()
   };
   const scannedFiles = await scanDirectories(folders, excludedPaths, explicitIncludes, scanStats);
   summary.scanned = scannedFiles.length;
@@ -155,6 +170,8 @@ export async function indexFolders(
   const listedDirectories = scanStats.listedDirectories ?? new Map<string, number>();
   const cloudOnlyDirectories = scanStats.cloudOnlyDirectories ?? new Set<string>();
   const unansweredDirectories = scanStats.unansweredDirectories ?? new Set<string>();
+  const refusedPaths = scanStats.refusedPaths ?? new Set<string>();
+  const exclusions = resolveExclusions(excludedPaths);
 
   const scannedPathSet = new Set(scannedFiles.map(f => f.path));
 
@@ -170,8 +187,11 @@ export async function indexFolders(
   let keptCloudOnlyFiles = 0;
 
   for (const doc of allDbDocs) {
-    // If document is under an excluded path, remove it immediately
-    if (isPathExcluded(doc.path, excludedPaths)) {
+    // If document is under an excluded path, remove it immediately -- also
+    // when an earlier version reached it through a link into an excluded
+    // folder, which the scan now refuses.
+    if (isPathExcluded(doc.path, excludedPaths)
+      || refusedPaths.has(doc.path) || isInAnyFolder(doc.path, refusedPaths)) {
       pathsToRemove.push(doc.path);
       continue;
     }
@@ -209,6 +229,10 @@ export async function indexFolders(
   if (pathsToRemove.length > 0) {
     appDb.deleteDocuments(pathsToRemove);
     summary.removed = pathsToRemove.length;
+    // Their text must not stay behind: not in the search index's segments,
+    // and not in the write-ahead log until the next checkpoint.
+    appDb.compactSearchIndex();
+    appDb.truncateWriteAheadLog();
   }
   summary.skippedDataless = Math.max(0, scanStats.skippedDatalessSupportedCount - keptCloudOnlyFiles);
 
@@ -220,7 +244,8 @@ export async function indexFolders(
   // A PDF's text: its text layer, with the pages that carry almost none read
   // by text recognition when this update has budget left for it. Otherwise
   // the document keeps what its text layer has and waits.
-  async function readPdf(filePath: string): Promise<{ content: string; ocr: OcrState }> {
+  async function readPdf(file: ScannedFile): Promise<{ content: string; ocr: OcrState }> {
+    const filePath = file.path;
     const pages = await extractPdfPageTexts(filePath);
     const sparse = pages.flatMap((text, i) => (visibleChars(text) < SPARSE_PAGE_CHARS ? [i + 1] : []));
     const joined = () => pages.join('\n').trim();
@@ -231,6 +256,8 @@ export async function indexFolders(
       return { content: joined(), ocr: 'pending' };
     }
     const started = Date.now();
+    // The recognizer has its own timeout per page; this is the backstop.
+    options.onReading?.(file, ocrTimeoutMs(sparse.length) + 2 * 60 * 1000);
     try {
       const recognized = await ocr.engine.recognizePdfPages(filePath, sparse);
       let added = false;
@@ -254,6 +281,14 @@ export async function indexFolders(
       return { content: joined(), ocr: 'failed' };
     } finally {
       ocrSpentMs += Date.now() - started;
+    }
+  }
+
+  function isStillReadable(filePath: string): boolean {
+    try {
+      return !isPathExcluded(fs.realpathSync(filePath), exclusions);
+    } catch {
+      return false;
     }
   }
 
@@ -292,6 +327,16 @@ export async function indexFolders(
       continue;
     }
 
+    // The file is read only if it still leads where the scan saw it lead: a
+    // file swapped for a link (into an excluded folder, say) since the scan is
+    // left alone.
+    if (!isStillReadable(file.path)) {
+      summary.skipped++;
+      continue;
+    }
+
+    options.onReading?.(file, documentReadLimitMs(file.size));
+
     // Extract text
     let content = '';
     let status: 'indexed' | 'failed' | 'no_text' = 'indexed';
@@ -299,7 +344,7 @@ export async function indexFolders(
 
     try {
       if (isPdf) {
-        const read = await readPdf(file.path);
+        const read = await readPdf(file);
         content = read.content;
         ocrState = read.ocr;
       } else {

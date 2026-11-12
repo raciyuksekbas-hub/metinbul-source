@@ -300,7 +300,7 @@ describe('how the app uses it', () => {
 
   it('never searches on the main process', () => {
     expect(main).not.toContain('runSearch');
-    expect(main).toMatch(/ipcMain\.handle\('app:search'[\s\S]{0,300}getSearchService\(\)\.search\(event\.sender\.id/);
+    expect(main).toMatch(/\bhandle\('app:search'[\s\S]{0,500}getSearchService\(\)\.search\(event\.sender\.id/);
   });
 
   it('reads the counts that walk the whole index on the worker', () => {

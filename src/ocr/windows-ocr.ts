@@ -13,8 +13,8 @@
 // quoting.
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { makePrivateTempDir, removePrivateTempDir } from '../shared/private-temp.js';
 import { assertContentLocallyAvailable, ContentNotLocallyAvailableError } from '../scanner/windows-availability.js';
 import {
   OcrEngine, OCR_EXIT_CLOUD_ONLY, OCR_EXIT_NO_TURKISH, OCR_EXIT_UNREADABLE, ocrTimeoutMs, splitOcrPages
@@ -121,7 +121,6 @@ function runPowerShell(script: string, timeoutMs: number): Promise<{ code: numbe
   });
 }
 
-let jobCounter = 0;
 
 export function createWindowsOcrEngine(): OcrEngine {
   return {
@@ -129,19 +128,19 @@ export function createWindowsOcrEngine(): OcrEngine {
       // The same rule as the extractors: opening an online-only placeholder
       // would download it.
       await assertContentLocallyAvailable(filePath);
-      const base = path.join(os.tmpdir(), `metinbul-ocr-${process.pid}-${jobCounter++}`);
-      const jobPath = `${base}.json`;
-      const outPath = `${base}.txt`;
-      fs.writeFileSync(jobPath, JSON.stringify({ path: filePath, pages, out: outPath }), 'utf8');
+      // The job file names the document and the output holds its recognised
+      // text: both live in a folder of their own (see private-temp.ts).
+      const jobDir = makePrivateTempDir('ocr');
+      const jobPath = path.join(jobDir, 'job.json');
+      const outPath = path.join(jobDir, 'out.txt');
       try {
+        fs.writeFileSync(jobPath, JSON.stringify({ path: filePath, pages, out: outPath }), { encoding: 'utf8', flag: 'wx' });
         const { code, stderr } = await runPowerShell(buildWindowsOcrScript(jobPath), ocrTimeoutMs(pages.length));
         if (code === OCR_EXIT_CLOUD_ONLY) throw new ContentNotLocallyAvailableError(filePath);
         if (code !== 0) throw new Error(`Text recognition failed (${code ?? 'timeout'}): ${stderr.trim()}`);
         return splitOcrPages(fs.readFileSync(outPath, 'utf8'), pages.length);
       } finally {
-        for (const file of [jobPath, outPath]) {
-          try { fs.unlinkSync(file); } catch { /* best effort */ }
-        }
+        removePrivateTempDir(jobDir);
       }
     }
   };

@@ -59,7 +59,7 @@ describe('Startup preference wiring', () => {
   });
 
   it('verifies the login item against the OS after writing it', () => {
-    const body = sliceFrom("ipcMain.handle('app:setStartAtLogin'", 1600);
+    const body = sliceFrom("handle('app:setStartAtLogin'", 1600);
     expect(body).toContain('app.setLoginItemSettings(');
     expect(body).toContain('getStartupSettingsPayload()');
     // setLoginItemSettings returns nothing and can fail quietly, so the
@@ -69,7 +69,7 @@ describe('Startup preference wiring', () => {
   });
 
   it('persists the background preference so it survives a restart', () => {
-    const body = sliceFrom("ipcMain.handle('app:setKeepRunningInBackground'", 900);
+    const body = sliceFrom("handle('app:setKeepRunningInBackground'", 900);
     expect(body).toContain("appDb.setAppSetting(");
     expect(body).toContain("'keep_running_in_background'");
   });
@@ -113,7 +113,7 @@ describe('Background work is limited to the automatic index update', () => {
   });
 
   it('indexes when the user asks, and otherwise only from the automatic update timer', () => {
-    const callers = [...MAIN_TS.matchAll(/ipcMain\.handle\('([^']+)'[\s\S]*?\n  \}\);/g)]
+    const callers = [...MAIN_TS.matchAll(/\bhandle\('([^']+)'[\s\S]*?\n  \}\);/g)]
       .filter(m => /triggerIndexing\(\)/.test(m[0]))
       .map(m => m[1])
       .sort();
@@ -126,10 +126,13 @@ describe('Background work is limited to the automatic index update', () => {
     ]);
     // ...and nowhere else: those five handlers, plus the timer, whose passes
     // are marked automatic (quiet, and no retry of unchanged unreadable files).
+    // The one other call continues an update the watchdog had to stop on an
+    // unreadable document, under the same trigger; it starts no new work.
     expect((MAIN_TS.match(/triggerIndexing\(\)/g) || []).length).toBe(5);
     expect((MAIN_TS.match(/triggerIndexing\('auto'\)/g) || []).length).toBe(1);
     expect(sliceFrom('function runAutoIndex()', 400)).toContain("triggerIndexing('auto')");
-    expect(sliceFrom('function triggerIndexing(', 600)).toContain("retryFailed: trigger === 'user'");
+    expect(sliceFrom('if (quarantined && !isQuitting)', 800)).toContain('triggerIndexing(trigger, { retryFailed: false })');
+    expect(sliceFrom('function triggerIndexing(', 1600)).toContain("retryFailed: options.retryFailed ?? trigger === 'user'");
   });
 
   it('does no network work at login: the silent update check waits for the user', () => {
@@ -167,7 +170,7 @@ describe('Background work is limited to the automatic index update', () => {
     expect(schedule).toContain('if (!autoIndexEnabled || isQuitting) return;');
     expect(schedule).toContain('setTimeout(runAutoIndex, AUTO_INDEX_INTERVAL_MS)');
     expect((MAIN_TS.match(/setTimeout\(runAutoIndex/g) || []).length).toBe(1);
-    expect(sliceFrom("worker.on('exit'", 500)).toContain('scheduleAutoIndex();');
+    expect(sliceFrom("worker.on('exit'", 1500)).toContain('scheduleAutoIndex();');
     expect(sliceFrom("app.on('before-quit'", 400)).toContain('clearTimeout(autoIndexTimer)');
     expect(MAIN_TS).toContain("parseBooleanSetting(appDb.getAppSetting('auto_index_enabled'), true)");
   });
@@ -182,7 +185,7 @@ describe('Global shortcut failure is diagnosable, never silent', () => {
   });
 
   it('reports the failure back to the renderer with the shortcut state', () => {
-    const body = sliceFrom("ipcMain.handle('app:getQuickSearchShortcut'", 700);
+    const body = sliceFrom("handle('app:getQuickSearchShortcut'", 700);
     expect(body).toContain('registered');
     expect(body).toContain('quickSearchShortcutError');
   });

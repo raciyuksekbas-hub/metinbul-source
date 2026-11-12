@@ -42,8 +42,12 @@ describe('Single-instance ownership (required by background residency)', () => {
   it('brings MetinBul up in the running process when the user relaunches it', () => {
     expect(MAIN_TS).toMatch(/app\.on\(\s*['"]second-instance['"]/);
     const handlerIndex = MAIN_TS.indexOf("app.on('second-instance'");
-    const handlerBody = MAIN_TS.slice(handlerIndex, handlerIndex + 400);
+    const handlerBody = MAIN_TS.slice(handlerIndex, handlerIndex + 700);
     expect(handlerBody).toContain('handleReopen(false)');
+    // A relaunch while the index is still being prepared (encrypted after an
+    // update) is held and answered once it is ready.
+    expect(handlerBody).toMatch(/if \(!indexReady\) \{\s*reopenRequested = true;\s*return;/);
+    expect(MAIN_TS).toContain('if (reopenRequested) handleReopen(false);');
 
     // handleReopen keeps the old main-window restore on Windows/Linux and
     // shows the search panel (or setup) on macOS -- never a second process.

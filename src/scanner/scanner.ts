@@ -41,6 +41,40 @@ export interface ScanStats {
   // indexer keeps every entry under them without touching their paths.
   cloudOnlyDirectories?: Set<string>;
   unansweredDirectories?: Set<string>;
+  // Folders and files the scan would only have reached through a symbolic
+  // link (or junction) into an excluded folder, as the scan spells them. They
+  // are not read, and the indexer removes what an earlier version indexed
+  // under them.
+  refusedPaths?: Set<string>;
+}
+
+function realPathsOf(target: string): string[] {
+  const out: string[] = [];
+  for (const resolve of [fs.realpathSync.native, fs.realpathSync]) {
+    try {
+      out.push(resolve(target));
+    } catch {
+      // Missing or unreadable: the spelling as given still applies.
+    }
+  }
+  return out;
+}
+
+/**
+ * The excluded folders in both spellings -- as the user picked them and with
+ * links resolved -- so that a folder reached through a symbolic link or a
+ * junction is recognised as excluded too. (A link out of the search areas to
+ * some other place, such as an external disk, is still followed: that is the
+ * user's own link. A link into a folder the user excluded is not.)
+ */
+export function resolveExclusions(excludedPaths: string[] = []): string[] {
+  const exclusions = new Set<string>();
+  for (const excluded of excludedPaths) {
+    if (!excluded) continue;
+    exclusions.add(excluded);
+    for (const real of realPathsOf(excluded)) exclusions.add(real);
+  }
+  return [...exclusions];
 }
 
 // Key for ScanStats.listedDirectories: case-insensitive on Windows, where
@@ -319,9 +353,11 @@ export async function scanDirectory(
   visitedDirs = new Set<string>(),
   excludedPaths: string[] = [],
   explicitIncludes: string[] = [],
-  scanStats?: ScanStats
+  scanStats?: ScanStats,
+  exclusions: string[] = resolveExclusions(excludedPaths)
 ): Promise<ScannedFile[]> {
   const results: ScannedFile[] = [];
+  const refuse = (lexicalPath: string) => scanStats?.refusedPaths?.add(lexicalPath);
 
   let realRoot: string;
   try {
@@ -334,14 +370,25 @@ export async function scanDirectory(
   }
 
   // Check if directory itself is user-excluded
-  if (isPathExcluded(dirPath, excludedPaths) || isPathExcluded(realRoot, excludedPaths)) {
+  if (isPathExcluded(dirPath, exclusions) || isPathExcluded(realRoot, exclusions)) {
     return results;
   }
 
-  if (visitedDirs.has(realRoot)) {
+  // Folders below are recorded under fs.promises.realpath, the native
+  // resolver, which can spell a path differently (Windows 8.3 short names
+  // such as RUNNER~1, letter case): the root goes in under both spellings,
+  // or a link back to it would be walked once more.
+  const rootSpellings = [realRoot];
+  try {
+    const nativeRoot = fs.realpathSync.native(dirPath);
+    if (nativeRoot !== realRoot) rootSpellings.push(nativeRoot);
+  } catch {
+    // The spelling above stands.
+  }
+  if (rootSpellings.some(spelling => visitedDirs.has(spelling))) {
     return results;
   }
-  visitedDirs.add(realRoot);
+  for (const spelling of rootSpellings) visitedDirs.add(spelling);
 
   // A root whose content is only in the cloud is not read either (see below).
   if (isDatalessPlaceholder(undefined, (await readDarwinFileFlags([dirPath])).get(dirPath))) {
@@ -396,17 +443,28 @@ export async function scanDirectory(
             subfolders.push({ path: fullPath, order: entryOrder });
           }
         } else if (entry.isSymbolicLink()) {
+          // A link into an excluded folder is not followed: the exclusion is
+          // judged on where the link really leads, not on its own name.
           try {
-            const stat = await fs.promises.stat(fullPath);
+            const target = await fs.promises.realpath(fullPath);
+            if (isPathExcluded(target, exclusions)) {
+              refuse(fullPath);
+              continue;
+            }
+            const stat = await fs.promises.stat(target);
             if (stat.isDirectory()) {
-              if (!shouldSkipDirectory(entry.name, fullPath, excludedPaths, explicitIncludes)) {
+              if (!shouldSkipDirectory(entry.name, fullPath, excludedPaths, explicitIncludes)
+                && !shouldSkipDirectory(path.basename(target), target, excludedPaths, explicitIncludes)) {
                 subfolders.push({ path: fullPath, order: entryOrder, stats: stat });
               }
-            } else if (stat.isFile() && SUPPORTED_EXTENSIONS.has(ext)) {
+            } else if (stat.isFile() && SUPPORTED_EXTENSIONS.has(ext)
+              // The file it leads to has to be a document too: a link named
+              // "Dilekce.pdf" to a program or a script is not one.
+              && SUPPORTED_EXTENSIONS.has(path.extname(target).toLowerCase())) {
               candidates.push({ path: fullPath, filename: entry.name, extension: ext, stats: stat, order: entryOrder });
             }
           } catch {
-            // Skip broken symlinks
+            // Skip broken symlinks and link loops (ELOOP)
           }
         } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(ext)) {
           try {
@@ -428,6 +486,11 @@ export async function scanDirectory(
       }
       try {
         const realSub = await fs.promises.realpath(folder.path);
+        // The same rule for a folder whose path runs through a link higher up.
+        if (isPathExcluded(realSub, exclusions)) {
+          refuse(folder.path);
+          continue;
+        }
         if (!visitedDirs.has(realSub)) {
           visitedDirs.add(realSub);
           next.push({ dir: folder.path, realDir: realSub, order: folder.order });
@@ -480,9 +543,10 @@ export async function scanDirectories(
   const seenPaths = new Set<string>();
   const visitedDirs = new Set<string>();
   const combined: ScannedFile[] = [];
+  const exclusions = resolveExclusions(excludedPaths);
 
   for (const dir of dirPaths) {
-    const files = await scanDirectory(dir, visitedDirs, excludedPaths, explicitIncludes, scanStats);
+    const files = await scanDirectory(dir, visitedDirs, excludedPaths, explicitIncludes, scanStats, exclusions);
     for (const file of files) {
       if (!seenPaths.has(file.path)) {
         seenPaths.add(file.path);

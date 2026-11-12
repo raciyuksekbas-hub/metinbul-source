@@ -1,7 +1,13 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 import * as path from 'path';
-import * as fs from 'fs';
 import { isPathExcluded, isPathOrSubpath } from '../scanner/scanner.js';
+import { ensurePrivateDirectory, restrictDatabaseFiles } from './private-files.js';
+import { applyKey } from './encryption.js';
+
+// Deleted rows are removed in transactions of this many documents, so the
+// main process -- which writes a setting now and then on the same file -- is
+// never kept waiting long for the write lock.
+const DELETE_BATCH = 50;
 
 export interface DocumentRecord {
   id?: number;
@@ -65,6 +71,9 @@ export interface AppDatabaseOptions {
   // For a thread that only reads an index the main process has already opened:
   // the schema is left alone and any write fails.
   queryOnly?: boolean;
+  // The index key (64 hex characters) when the index is encrypted; see
+  // encryption.ts. Without it the file is a plain SQLite database.
+  keyHex?: string;
 }
 
 export class AppDatabase {
@@ -73,26 +82,45 @@ export class AppDatabase {
   constructor(dbPath: string = ':memory:', options: AppDatabaseOptions = {}) {
     if (options.queryOnly) {
       this.db = new Database(dbPath, { fileMustExist: true });
-      this.db.pragma('busy_timeout = 3000');
-      this.db.pragma('query_only = ON');
+      try {
+        if (options.keyHex) applyKey(this.db, options.keyHex);
+        this.db.pragma('busy_timeout = 3000');
+        this.db.pragma('query_only = ON');
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
       return;
     }
 
     if (dbPath !== ':memory:') {
-      const dir = path.dirname(dbPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
+      ensurePrivateDirectory(path.dirname(dbPath));
+      restrictDatabaseFiles(dbPath);
     }
 
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    // The background indexer and the search worker each have their own
-    // connection to this same file; a busy_timeout keeps a rare lock collision
-    // from surfacing as SQLITE_BUSY.
-    this.db.pragma('busy_timeout = 3000');
-    this.initSchema();
+    try {
+      // The key comes before anything else reads or writes the file.
+      if (options.keyHex) applyKey(this.db, options.keyHex);
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
+      // The background indexer and the search worker each have their own
+      // connection to this same file; a busy_timeout keeps a rare lock
+      // collision from surfacing as SQLITE_BUSY.
+      this.db.pragma('busy_timeout = 3000');
+      // A deleted or rewritten document's text is overwritten with zeros
+      // instead of lingering in free pages of the file (see also
+      // compactSearchIndex for the search index's own leftovers).
+      this.db.pragma('secure_delete = ON');
+      this.initSchema();
+    } catch (error) {
+      // Not left open behind a failed start: on Windows an open handle keeps
+      // the file locked until the garbage collector gets to it.
+      this.db.close();
+      throw error;
+    }
+    // The -wal and -shm files only exist once the file has been opened.
+    restrictDatabaseFiles(dbPath);
   }
 
   private initSchema() {
@@ -151,19 +179,82 @@ export class AppDatabase {
       // Ignore migration errors
     }
 
-    // Check if documents_fts exists and uses trigram tokenizer
-    const ftsTable = this.db.prepare(`
+    // The search table must exist and use the trigram tokenizer. Building it
+    // (or replacing an older one) is a single transaction: an interrupted
+    // build used to leave an empty trigram table behind, which nothing ever
+    // filled again -- the indexer skips unchanged documents -- so every
+    // document indexed before stayed unsearchable. Now it rolls back and the
+    // next start builds it again. IMMEDIATE takes the write lock first, so
+    // the main process and the indexer thread cannot both build it.
+    const readFtsTable = () => this.db.prepare(`
       SELECT sql FROM sqlite_master WHERE type='table' AND name='documents_fts'
     `).get() as { sql: string } | undefined;
+    const isTrigram = (table: { sql: string } | undefined) => table !== undefined && table.sql.toLowerCase().includes('trigram');
 
-    if (ftsTable) {
-      if (!ftsTable.sql.toLowerCase().includes('trigram')) {
-        // Drop existing non-trigram FTS table and recreate with trigram
-        this.db.exec(`DROP TABLE documents_fts;`);
+    if (!isTrigram(readFtsTable())) {
+      this.db.transaction(() => {
+        const ftsTable = readFtsTable();
+        if (isTrigram(ftsTable)) return;
+        if (ftsTable) {
+          // Drop existing non-trigram FTS table and recreate with trigram
+          this.db.exec(`DROP TABLE documents_fts;`);
+        }
         this.createAndPopulateFtsTable();
-      }
-    } else {
-      this.createAndPopulateFtsTable();
+      }).immediate();
+    }
+
+    this.disableFtsSecureDelete();
+  }
+
+  // FTS5's own 'secure-delete' option was tried and dropped: on a 5,000
+  // document index it made one delete 60x slower (a 50-document batch held
+  // the write lock for seconds, long enough for a setting written by the
+  // main process to fail with SQLITE_BUSY). compactSearchIndex removes the
+  // same leftovers in short steps instead. The option is stored in the index
+  // itself, so a test profile that had it is switched back here.
+  private disableFtsSecureDelete() {
+    const row = this.db.prepare(
+      "SELECT v FROM documents_fts_config WHERE k = 'secure-delete'"
+    ).get() as { v: number } | undefined;
+    if (row?.v !== 1) return;
+    this.db.prepare(
+      "INSERT INTO documents_fts(documents_fts, rank) VALUES('secure-delete', 0)"
+    ).run();
+  }
+
+  /**
+   * FTS5 only marks a deleted document's entries as deleted and keeps them
+   * until its segments are merged: with the trigram tokenizer that is most
+   * of the document's text, in pieces, with positions. This merges all
+   * segments together in small steps (each its own short write, a few ms to
+   * a few tens of ms), which drops those entries, until there is nothing left
+   * to merge or the time budget is spent. Returns whether it finished.
+   * Measured: 1.2 s in all after deleting 1,000 of 5,000 documents.
+   */
+  public compactSearchIndex(budgetMs = 60_000): boolean {
+    const merge = this.db.prepare("INSERT INTO documents_fts(documents_fts, rank) VALUES('merge', -16)");
+    const changes = this.db.prepare('SELECT total_changes() AS n');
+    const started = Date.now();
+    for (;;) {
+      const before = (changes.get() as { n: number }).n;
+      merge.run();
+      // Fewer than two changed rows: nothing was left to merge.
+      if ((changes.get() as { n: number }).n - before < 2) return true;
+      if (Date.now() - started > budgetMs) return false;
+    }
+  }
+
+  /**
+   * Gives the space of the write-ahead log back once a batch of documents has
+   * been deleted, so their old pages do not stay in the -wal file until the
+   * next automatic checkpoint. Best effort: a reader still using an older
+   * snapshot keeps part of the log until it finishes.
+   */
+  public truncateWriteAheadLog(): void {
+    try {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      // Busy: the next checkpoint does it.
     }
   }
 
@@ -486,13 +577,34 @@ export class AppDatabase {
     upsertTx();
   }
 
+  /**
+   * Records a document whose reading had to be stopped (it overran its time
+   * or brought the indexer down) so later updates do not try it again unless
+   * the user asks. A document whose text is already in the index and has not
+   * changed keeps that text; only its text recognition is marked as failed.
+   */
+  public markDocumentUnreadable(file: Pick<DocumentRecord, 'path' | 'filename' | 'extension' | 'mtime' | 'size'>): void {
+    const existing = this.db.prepare('SELECT mtime, size, index_status FROM documents WHERE path = ?')
+      .get(file.path) as { mtime: number; size: number; index_status: string } | undefined;
+    if (existing && existing.mtime === file.mtime && existing.size === file.size && existing.index_status !== 'failed') {
+      this.db.prepare("UPDATE documents SET ocr = 'failed' WHERE path = ?").run(file.path);
+      return;
+    }
+    this.upsertDocument({ ...file, content: '', index_status: 'failed', ocr: null });
+  }
+
+  // A point lookup on the unique path index: no document text is read.
+  public hasDocument(docPath: string): boolean {
+    return this.db.prepare('SELECT 1 FROM documents WHERE path = ? LIMIT 1').get(docPath) !== undefined;
+  }
+
   public deleteDocuments(paths: string[]): void {
     if (paths.length === 0) return;
 
-    const deleteTx = this.db.transaction(() => {
-      const placeholders = paths.map(() => '?').join(',');
-      const docs = this.db.prepare(`SELECT id FROM documents WHERE path IN (${placeholders})`).all(...paths) as { id: number }[];
-      
+    const deleteBatch = this.db.transaction((batch: string[]) => {
+      const placeholders = batch.map(() => '?').join(',');
+      const docs = this.db.prepare(`SELECT id FROM documents WHERE path IN (${placeholders})`).all(...batch) as { id: number }[];
+
       if (docs.length > 0) {
         const ids = docs.map(d => d.id);
         const idPlaceholders = ids.map(() => '?').join(',');
@@ -501,7 +613,9 @@ export class AppDatabase {
       }
     });
 
-    deleteTx();
+    for (let i = 0; i < paths.length; i += DELETE_BATCH) {
+      deleteBatch(paths.slice(i, i + DELETE_BATCH));
+    }
   }
 
   public close(): void {
