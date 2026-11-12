@@ -70,7 +70,7 @@ export async function renderAboutView(container: HTMLElement, options: { checkUp
       </section>
 
       <section class="settings-group" aria-labelledby="about-copyright-title">
-        <h2 class="settings-group-title" id="about-copyright-title">Telif</h2>
+        <h2 class="settings-group-title" id="about-copyright-title">Telif ve Lisans</h2>
         <p class="about-copyright">${escapeHtml(about.copyright)}</p>
         <p class="settings-note">${escapeHtml(about.copyrightNote)}</p>
       </section>

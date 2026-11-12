@@ -63,12 +63,19 @@ export function getPackageVersion(): string {
   return '0.1.0';
 }
 
+// MetinBul is published under the MIT license (LICENSE): the notice names the
+// copyright holder and claims no rights beyond it.
 export function getCopyrightText(currentYear: number = new Date().getFullYear()): string {
   if (currentYear > 2026) {
-    return `© 2026–${currentYear} ${DEVELOPER_NAME}. Tüm hakları saklıdır.`;
+    return `© 2026–${currentYear} ${DEVELOPER_NAME}`;
   }
-  return `© 2026 ${DEVELOPER_NAME}. Tüm hakları saklıdır.`;
+  return `© 2026 ${DEVELOPER_NAME}`;
 }
+
+export const LICENSE_NOTE =
+  'MetinBul açık kaynaklıdır ve MIT lisansıyla dağıtılır: kaynak kodunu inceleyebilir, kullanabilir, ' +
+  'değiştirebilir ve dağıtabilirsiniz; bunu yaparken telif ve lisans bildirimini korumanız yeterlidir. ' +
+  'MetinBul hiçbir garanti verilmeden, olduğu gibi sunulur.';
 
 export function getFeedbackMailto(version: string = getPackageVersion()): string {
   const subject = encodeURIComponent('MetinBul Geribildirim');
@@ -85,7 +92,7 @@ export function getAboutMetadata(): AboutMetadata {
     version,
     shortDescription: 'Bilgisayarınızdaki DOC, DOCX, PDF ve UDF belgelerinin metin içeriklerinde yerel olarak arama yapan masaüstü aracı.',
     copyright: getCopyrightText(),
-    copyrightNote: 'MetinBul’un kaynak kodu, görsel kimliği ve dağıtım paketleri üzerindeki haklar saklıdır.',
+    copyrightNote: LICENSE_NOTE,
     developerName: DEVELOPER_NAME,
     build: getBuildInfo(),
     feedback: {

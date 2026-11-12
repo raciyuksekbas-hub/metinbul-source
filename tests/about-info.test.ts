@@ -31,10 +31,10 @@ describe('Simplified About Info & Metadata', () => {
 
   it('should generate correct copyright text for 2026 and future years', () => {
     const text2026 = getCopyrightText(2026);
-    expect(text2026).toBe('© 2026 Raci Çetin Yüksekbaş. Tüm hakları saklıdır.');
+    expect(text2026).toBe('© 2026 Raci Çetin Yüksekbaş');
 
     const textFuture = getCopyrightText(2028);
-    expect(textFuture).toBe('© 2026–2028 Raci Çetin Yüksekbaş. Tüm hakları saklıdır.');
+    expect(textFuture).toBe('© 2026–2028 Raci Çetin Yüksekbaş');
   });
 
   it('should generate verified mailto URL with correct email, subject and dynamic version', () => {
@@ -58,7 +58,10 @@ describe('Simplified About Info & Metadata', () => {
     expect(meta.feedback.mailtoUrl).toBeDefined();
     expect(meta.feedback.mailtoUrl).toContain(FEEDBACK_EMAIL);
     expect(meta.shortDescription).toContain('DOC, DOCX, PDF ve UDF');
-    expect(meta.copyrightNote).toContain('MetinBul’un kaynak kodu, görsel kimliği');
+    // The About text must agree with LICENSE (MIT), not reserve all rights.
+    expect(meta.copyrightNote).toContain('MIT lisansıyla');
+    expect(meta.copyrightNote).toContain('garanti verilmeden');
+    expect(JSON.stringify(meta)).not.toMatch(/haklar[ıi]? saklı/);
     
     // Ensure no unwanted titles or brand entities
     expect(JSON.stringify(meta)).not.toContain('Avukat');

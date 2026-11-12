@@ -1,7 +1,7 @@
 {
   "name": "metinbul",
   "productName": "MetinBul",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "DOC, DOCX, PDF ve UDF belgelerinde yerel metin arama utility'si",
   "main": "dist/main.js",
   "type": "module",
@@ -51,6 +51,7 @@
   "build": {
     "appId": "com.metinbul.app",
     "productName": "MetinBul",
+    "copyright": "Copyright © 2026 Raci Çetin Yüksekbaş",
     "compression": "maximum",
     "npmRebuild": false,
     "afterPack": "scripts/electron-fuses.cjs",
