@@ -3,7 +3,7 @@
 // and re-indexes the affected scope, exactly as before.
 import { escapeHtml } from '../result-card.js';
 import { announceAlways } from '../announcer.js';
-import { getAccessibleScopeState } from '../../shared/a11y-text.js';
+import { getAccessibleScopeState, getAllScopeNote } from '../../shared/a11y-text.js';
 import type { SearchAreaItem } from '../window-api.js';
 
 export interface LocationsViewOptions {
@@ -53,7 +53,7 @@ export async function renderLocationsView(container: HTMLElement, options: Locat
         </div>
       </div>
       <p class="settings-note">${mode === 'all'
-        ? 'Bilgisayarınızdaki erişilebilir belge konumlarında arama yapılır. Sistem ve geçici dosya alanları taranmaz.'
+        ? getAllScopeNote(/Windows/.test(navigator.userAgent))
         : 'Yalnızca aşağıda eklediğiniz klasörlerde arama yapılır.'}</p>
     </section>
 
@@ -92,7 +92,7 @@ export async function renderLocationsView(container: HTMLElement, options: Locat
   });
 
   const addFolder = async (type: 'include' | 'exclude', buttonId: string) => {
-    const selected = await window.api.selectFolder();
+    const selected = await window.api.selectFolder(type);
     if (!selected) return;
     await window.api.addSearchArea(selected, type);
     announceAlways(type === 'include'

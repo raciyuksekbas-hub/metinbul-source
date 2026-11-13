@@ -12,6 +12,7 @@ export interface StartupSettings {
   startAtLoginStatus?: string;
   keepRunningInBackground: boolean;
   backgroundSupported: boolean;
+  contentProtection: boolean;
 }
 
 export interface StartupSettingsResult {
@@ -45,7 +46,8 @@ export interface MetinBulApi {
   getSearchAreas: () => Promise<SearchAreaItem[]>;
   addSearchArea: (path: string, type: 'include' | 'exclude') => Promise<boolean>;
   removeSearchArea: (path: string) => Promise<boolean>;
-  selectFolder: () => Promise<string | null>;
+  selectFolder: (purpose?: 'include' | 'exclude') => Promise<string | null>;
+  rebuildIndex: () => Promise<boolean>;
   shouldShowOnboarding: () => Promise<boolean>;
   completeOnboarding: (mode: 'all' | 'selected', folders?: string[], options?: { startAtLogin?: boolean }) => Promise<boolean>;
   getLastSkippedDataless: () => Promise<number>;
@@ -55,6 +57,7 @@ export interface MetinBulApi {
   getStartupSettings: () => Promise<StartupSettings>;
   setStartAtLogin: (enabled: boolean) => Promise<StartupSettingsResult>;
   setKeepRunningInBackground: (enabled: boolean) => Promise<StartupSettingsResult>;
+  setContentProtection: (enabled: boolean) => Promise<StartupSettingsResult>;
   setAutoIndexEnabled: (enabled: boolean) => Promise<any>;
   setOcrEnabled: (enabled: boolean) => Promise<any>;
   installWindowsTurkishOcr: () => Promise<any>;
@@ -104,7 +107,8 @@ const api: MetinBulApi = {
   getSearchAreas: () => ipcRenderer.invoke('app:getSearchAreas'),
   addSearchArea: (folderPath: string, type: 'include' | 'exclude') => ipcRenderer.invoke('app:addSearchArea', folderPath, type),
   removeSearchArea: (folderPath: string) => ipcRenderer.invoke('app:removeSearchArea', folderPath),
-  selectFolder: () => ipcRenderer.invoke('app:selectFolder'),
+  selectFolder: (purpose?: 'include' | 'exclude') => ipcRenderer.invoke('app:selectFolder', purpose),
+  rebuildIndex: () => ipcRenderer.invoke('app:rebuildIndex'),
   shouldShowOnboarding: () => ipcRenderer.invoke('app:shouldShowOnboarding'),
   completeOnboarding: (mode, folders, options) => ipcRenderer.invoke('app:completeOnboarding', mode, folders, options),
   getLastSkippedDataless: () => ipcRenderer.invoke('app:getLastSkippedDataless'),
@@ -114,6 +118,7 @@ const api: MetinBulApi = {
   getStartupSettings: () => ipcRenderer.invoke('app:getStartupSettings'),
   setStartAtLogin: (enabled: boolean) => ipcRenderer.invoke('app:setStartAtLogin', enabled),
   setKeepRunningInBackground: (enabled: boolean) => ipcRenderer.invoke('app:setKeepRunningInBackground', enabled),
+  setContentProtection: (enabled: boolean) => ipcRenderer.invoke('app:setContentProtection', enabled),
   setAutoIndexEnabled: (enabled: boolean) => ipcRenderer.invoke('app:setAutoIndexEnabled', enabled),
   setOcrEnabled: (enabled: boolean) => ipcRenderer.invoke('app:setOcrEnabled', enabled),
   installWindowsTurkishOcr: () => ipcRenderer.invoke('app:installWindowsTurkishOcr'),

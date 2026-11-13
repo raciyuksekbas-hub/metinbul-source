@@ -75,6 +75,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { makePrivateTempDir, removePrivateTempDir } from '../shared/private-temp.js';
+import { windowsPowerShellPath } from '../shared/powershell.js';
 
 /** Documented Windows file attribute constants (WinNT.h). */
 export const FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
@@ -184,7 +185,8 @@ export function buildAttributeReaderScript(listPath: string): string {
   );
 }
 
-const POWERSHELL_CANDIDATES = ['powershell.exe', 'pwsh.exe'];
+// Windows PowerShell by its full path (see powershell.ts), then PowerShell 7.
+const POWERSHELL_CANDIDATES = [windowsPowerShellPath(), 'pwsh.exe'];
 const WINDOWS_ATTRIBUTE_BATCH_SIZE = 1000;
 const ATTRIBUTE_READER_TIMEOUT_MS = 30000;
 

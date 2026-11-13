@@ -110,7 +110,14 @@ describe('no network while indexing and searching', () => {
     };
     walk(path.join(ROOT, 'src'));
     walk(path.join(ROOT, 'native'));
-    expect(files).toEqual(['src/main/updater.ts']);
+    expect(files).toEqual(['src/main/main.ts', 'src/main/updater.ts']);
+    // main.ts only hands the update check Electron's net.fetch (it uses the
+    // system proxy), on one line, and passes it nowhere else.
+    const main = fs.readFileSync(path.join(ROOT, 'src/main/main.ts'), 'utf8').split(/\r?\n/);
+    expect(main.filter(line => networkCall.test(line))).toEqual([
+      'const updateFetch = ((input: string, init?: RequestInit) => net.fetch(input, init)) as typeof fetch;'
+    ]);
+    expect(main.filter(line => /updateFetch/.test(line) && !/^const updateFetch/.test(line)).every(line => /checkForUpdates\(/.test(line))).toBe(true);
 
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const fetchFn = (async (url: string, init?: RequestInit) => {

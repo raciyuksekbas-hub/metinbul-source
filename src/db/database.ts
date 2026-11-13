@@ -56,16 +56,47 @@ export interface ScopeStatusCounts {
   noText: number;
 }
 
+export type DocumentState = Pick<DocumentRecord, 'mtime' | 'size' | 'index_status' | 'ocr'>;
+
 export interface UnreadableDocument {
   path: string;
   filename: string;
   status: 'failed' | 'no_text';
 }
 
+// Turkish writes hâkim, şikâyet, vekâlet, mahkûm, millî both with and without
+// the circumflex, and a search for one spelling must find the other. A
+// colleague's review of 0.4.3: "şikayet" did not find "şikâyet", nor
+// "hakimliğine" "HÂKİMLİĞİNE". One letter for one, so a match found in the
+// folded text sits at the same place in the original.
+const CIRCUMFLEX = /[âîû]/g;
+const WITHOUT_CIRCUMFLEX: Record<string, string> = { â: 'a', î: 'i', û: 'u' };
+export function foldCircumflex(lowercase: string): string {
+  return lowercase.replace(CIRCUMFLEX, ch => WITHOUT_CIRCUMFLEX[ch]);
+}
+
+/** How text is put into the search table and how queries are matched to it. */
 export function normalizeForSearch(text: string): string {
+  if (!text) return '';
+  return foldCircumflex(text.normalize('NFC').toLocaleLowerCase('tr-TR'));
+}
+
+/**
+ * The form a search table built by 0.4.4 or earlier holds: no circumflex
+ * folding. Used for such a table until it has been rebuilt
+ * (AppDatabase.upgradeSearchTable).
+ */
+export function normalizeForSearchV1(text: string): string {
   if (!text) return '';
   return text.normalize('NFC').toLocaleLowerCase('tr-TR');
 }
+
+// The search table. contentless: the table keeps only its index, not a
+// second copy of every document's text (which documents.content already
+// holds); a review measured the index at a fifth smaller. contentless_delete
+// lets a document's entry be deleted by its id alone.
+const SEARCH_TABLE_COLUMNS = `filename, content, tokenize = 'trigram', content = '', contentless_delete = 1`;
+const SEARCH_TABLE_BATCH = 200;
 
 export interface AppDatabaseOptions {
   // For a thread that only reads an index the main process has already opened:
@@ -76,14 +107,25 @@ export interface AppDatabaseOptions {
   keyHex?: string;
 }
 
+// SQLite3 Multiple Ciphers encrypts the index, its journal and its WAL, but
+// not SQLite's temporary files (large sorts, a statement's working tables),
+// which go to the temp folder as plain files: a deleted document's text
+// could land there. With an encrypted index they stay in memory.
+function keepTemporaryDataInMemory(db: DatabaseType, keyHex: string | undefined): void {
+  if (keyHex) db.pragma('temp_store = MEMORY');
+}
+
 export class AppDatabase {
   public db: DatabaseType;
+  // Which form the search table holds, by schema version (see searchTextForm).
+  private searchFormCache: { schemaVersion: number; form: 1 | 2 } | null = null;
 
   constructor(dbPath: string = ':memory:', options: AppDatabaseOptions = {}) {
     if (options.queryOnly) {
       this.db = new Database(dbPath, { fileMustExist: true });
       try {
         if (options.keyHex) applyKey(this.db, options.keyHex);
+        keepTemporaryDataInMemory(this.db, options.keyHex);
         this.db.pragma('busy_timeout = 3000');
         this.db.pragma('query_only = ON');
       } catch (error) {
@@ -102,6 +144,7 @@ export class AppDatabase {
     try {
       // The key comes before anything else reads or writes the file.
       if (options.keyHex) applyKey(this.db, options.keyHex);
+      keepTemporaryDataInMemory(this.db, options.keyHex);
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('synchronous = NORMAL');
       // The background indexer and the search worker each have their own
@@ -259,32 +302,92 @@ export class AppDatabase {
   }
 
   private createAndPopulateFtsTable() {
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-        filename,
-        content,
-        tokenize = 'trigram'
-      );
-    `);
-
-    // Repopulate from documents if any documents already exist in DB
-    const docs = this.db.prepare(`
-      SELECT id, filename, content, index_status FROM documents
-    `).all() as { id: number; filename: string; content: string; index_status: string }[];
-
-    if (docs.length > 0) {
-      const insertStmt = this.db.prepare(`
-        INSERT INTO documents_fts (rowid, filename, content)
-        VALUES (?, ?, ?)
-      `);
-      const populateTx = this.db.transaction(() => {
-        for (const doc of docs) {
-          const content = doc.index_status === 'indexed' && doc.content ? normalizeForSearch(doc.content) : '';
-          insertStmt.run(doc.id, normalizeForSearch(doc.filename), content);
-        }
-      });
-      populateTx();
+    this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(${SEARCH_TABLE_COLUMNS});`);
+    // Filled from the documents a page at a time: reading them all at once
+    // held every document's text in memory together.
+    for (let lastId = 0; ;) {
+      const page = this.readDocumentPage(lastId);
+      if (page.length === 0) break;
+      this.insertSearchRows('documents_fts', page);
+      lastId = page[page.length - 1].id;
     }
+  }
+
+  private readDocumentPage(afterId: number, limit = SEARCH_TABLE_BATCH) {
+    return this.db.prepare(`
+      SELECT id, filename, content, index_status FROM documents WHERE id > ? ORDER BY id LIMIT ?
+    `).all(afterId, limit) as { id: number; filename: string; content: string; index_status: string }[];
+  }
+
+  private insertSearchRows(table: string, docs: { id: number; filename: string; content: string; index_status: string }[]) {
+    const insert = this.db.prepare(`INSERT INTO ${table} (rowid, filename, content) VALUES (?, ?, ?)`);
+    for (const doc of docs) {
+      const content = doc.index_status === 'indexed' && doc.content ? normalizeForSearch(doc.content) : '';
+      insert.run(doc.id, normalizeForSearch(doc.filename), content);
+    }
+  }
+
+  /**
+   * Which form the search table holds: 2 for the current one (circumflex
+   * folding, no copy of the text), 1 for a table built by 0.4.4 or earlier.
+   * Read again whenever the schema changes, as it does when another
+   * connection (the indexer thread) has just upgraded the table.
+   */
+  public searchTextForm(): 1 | 2 {
+    const schemaVersion = this.db.pragma('schema_version', { simple: true }) as number;
+    if (this.searchFormCache?.schemaVersion === schemaVersion) return this.searchFormCache.form;
+    const table = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documents_fts'").get() as { sql: string } | undefined;
+    const form: 1 | 2 = table && !/contentless_delete/i.test(table.sql) ? 1 : 2;
+    this.searchFormCache = { schemaVersion, form };
+    return form;
+  }
+
+  /** Text as the search table in this file holds it (see searchTextForm). */
+  public normalizeForSearchTable(text: string): string {
+    return this.searchTextForm() === 2 ? normalizeForSearch(text) : normalizeForSearchV1(text);
+  }
+
+  public needsSearchTableUpgrade(): boolean {
+    return this.searchTextForm() === 1;
+  }
+
+  /**
+   * Rebuilds a search table made by 0.4.4 or earlier in the current form, on
+   * the indexer thread: into a new table a page of documents at a time (each
+   * page its own short write, so the main process and searches go on), then
+   * swapped in at once. Searches use the old table, with its own
+   * normalization, until the swap. Documents changed or deleted meanwhile are
+   * put right in the swap. Interrupted (MetinBul quit), it starts over at
+   * the next update. Returns whether the table was swapped.
+   */
+  public upgradeSearchTable(options: { shouldStop?: () => boolean } = {}): boolean {
+    if (!this.needsSearchTableUpgrade()) return false;
+    const started = Date.now();
+    this.db.transaction(() => {
+      this.db.exec('DROP TABLE IF EXISTS documents_fts_next');
+      this.db.exec(`CREATE VIRTUAL TABLE documents_fts_next USING fts5(${SEARCH_TABLE_COLUMNS});`);
+    }).immediate();
+    for (let lastId = 0; ;) {
+      if (options.shouldStop?.()) return false;
+      const page = this.readDocumentPage(lastId);
+      if (page.length === 0) break;
+      this.db.transaction(() => this.insertSearchRows('documents_fts_next', page)).immediate();
+      lastId = page[page.length - 1].id;
+    }
+    this.db.transaction(() => {
+      // Deleted meanwhile.
+      this.db.exec('DELETE FROM documents_fts_next WHERE rowid NOT IN (SELECT id FROM documents)');
+      // Added or rewritten meanwhile (indexed_at is set on every write).
+      const changed = this.db.prepare('SELECT id, filename, content, index_status FROM documents WHERE indexed_at >= ?')
+        .all(started) as { id: number; filename: string; content: string; index_status: string }[];
+      const remove = this.db.prepare('DELETE FROM documents_fts_next WHERE rowid = ?');
+      for (const doc of changed) remove.run(doc.id);
+      this.insertSearchRows('documents_fts_next', changed);
+      this.db.exec('DROP TABLE documents_fts');
+      this.db.exec('ALTER TABLE documents_fts_next RENAME TO documents_fts');
+    }).immediate();
+    this.searchFormCache = null;
+    return true;
   }
 
   public getAppSetting(key: string): string | undefined {
@@ -403,6 +506,13 @@ export class AppDatabase {
     const resolvedPath = path.resolve(folderPath);
     this.removeDocumentsInFolder(resolvedPath);
     this.removeSearchArea(resolvedPath);
+  }
+
+  // What the indexer needs to decide whether a file must be read again --
+  // without its text, which SELECT * would load for every file of every
+  // automatic update.
+  public getDocumentState(docPath: string): DocumentState | undefined {
+    return this.db.prepare('SELECT mtime, size, index_status, ocr FROM documents WHERE path = ?').get(docPath) as DocumentState | undefined;
   }
 
   public getDocumentByPath(docPath: string): DocumentRecord | undefined {
@@ -558,8 +668,8 @@ export class AppDatabase {
           VALUES (?, ?, ?)
         `).run(
           rowId,
-          normalizeForSearch(doc.filename),
-          normalizeForSearch(doc.content)
+          this.normalizeForSearchTable(doc.filename),
+          this.normalizeForSearchTable(doc.content)
         );
       } else if (doc.index_status === 'no_text' || doc.index_status === 'failed') {
         // Still index filename so user can find file by name
@@ -568,7 +678,7 @@ export class AppDatabase {
           VALUES (?, ?, ?)
         `).run(
           rowId,
-          normalizeForSearch(doc.filename),
+          this.normalizeForSearchTable(doc.filename),
           ''
         );
       }
@@ -591,6 +701,33 @@ export class AppDatabase {
       return;
     }
     this.upsertDocument({ ...file, content: '', index_status: 'failed', ocr: null });
+  }
+
+  /**
+   * Empties the index -- every document and its searchable text -- for
+   * "Dizini sil ve yeniden oluştur". Settings and search areas stay; with
+   * secure_delete the freed pages are zeroed.
+   */
+  public clearDocuments(): void {
+    this.db.transaction(() => {
+      // The search table is dropped and made again, empty and in the current
+      // form: with secure_delete its pages are zeroed, which is quicker than
+      // deleting its entries one document at a time.
+      this.db.exec('DROP TABLE IF EXISTS documents_fts');
+      this.db.exec('DROP TABLE IF EXISTS documents_fts_next');
+      this.db.exec(`CREATE VIRTUAL TABLE documents_fts USING fts5(${SEARCH_TABLE_COLUMNS});`);
+      this.db.exec('DELETE FROM documents');
+    }).immediate();
+    this.searchFormCache = null;
+    // The file gives its space back now that it is all but empty -- a
+    // moment's work at this point, unlike compacting a full index -- so a
+    // rebuilt index is as small as a new one.
+    try {
+      this.db.exec('VACUUM');
+    } catch {
+      // Another connection is reading: the space is reused as the index fills.
+    }
+    this.truncateWriteAheadLog();
   }
 
   // A point lookup on the unique path index: no document text is read.

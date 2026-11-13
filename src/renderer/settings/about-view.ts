@@ -26,9 +26,10 @@ function updateHtml(info: UpdateCheckInfo | null, checking: boolean): string {
 }
 
 export async function renderAboutView(container: HTMLElement, options: { checkUpdates?: boolean } = {}): Promise<void> {
-  const [about, knownUpdate] = await Promise.all([
+  const [about, knownUpdate, indexStatus] = await Promise.all([
     window.api.getAboutInfo(),
-    window.api.getUpdateInfo().catch(() => null)
+    window.api.getUpdateInfo().catch(() => null),
+    window.api.getIndexStatus().catch(() => null)
   ]);
   if (knownUpdate && !lastUpdateInfo) lastUpdateInfo = knownUpdate;
 
@@ -41,6 +42,9 @@ export async function renderAboutView(container: HTMLElement, options: { checkUp
         <p class="about-version">Sürüm ${escapeHtml(about.version)}${about.build ? ` · Derleme ${escapeHtml(String(about.build.commit).slice(0, 12))}${about.build.dirty ? ' (yerel değişiklikli)' : ''}` : ''}</p>
         <p class="about-description">${escapeHtml(about.shortDescription)}</p>
         <p class="settings-note">Geliştirici: ${escapeHtml(about.developerName)}</p>
+        ${indexStatus ? (indexStatus.indexEncrypted
+          ? '<p class="settings-note">Arama dizini: şifreli</p>'
+          : `<p class="settings-warning" role="note">Arama dizini: şifrelenmemiş. ${escapeHtml(indexStatus.indexEncryptionProblem || '')}</p>`) : ''}
       </section>
 
       <section class="settings-group" aria-labelledby="about-updates-title">

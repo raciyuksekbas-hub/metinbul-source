@@ -145,7 +145,9 @@ describe.skipIf(!onWindows)('Windows attribute reader against the real filesyste
     for (const filePath of filePaths) {
       expect(isWindowsOnlineOnlyPlaceholder(attributes.get(filePath))).toBe(false);
     }
-  });
+    // About 3.5 ms a file in PowerShell: 4 s alone and 6 s under load on a
+    // real office computer (a review of 0.4.3), past the default 5 s.
+  }, 30_000);
 
   it('surfaces a real FILE_ATTRIBUTE_OFFLINE bit set by the OS', async () => {
     const filePath = path.join(workDir, 'arsivlenmis.pdf');

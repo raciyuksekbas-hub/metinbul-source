@@ -487,12 +487,34 @@ describe('Search Areas (Arama Alanları) Scope & Mode Tests (v0.2.0)', () => {
       const events: any[] = [];
       const summary = await indexAccessibleDocuments(db, (p) => events.push(p));
 
-      expect(summary).toEqual({ scanned: 0, indexed: 0, skipped: 0, failed: 0, removed: 0, skippedDataless: 0, keptCloudOnly: 0, ocrRecognized: 0, ocrPending: 0 });
+      expect(summary).toEqual({ scanned: 0, indexed: 0, skipped: 0, failed: 0, removed: 1, skippedDataless: 0, keptCloudOnly: 0, ocrRecognized: 0, ocrPending: 0, unverified: 0 });
       expect(events).toEqual([{ total: 0, current: 0, status: 'completed' }]);
-      // Pre-existing indexed doc from the earlier "all" scan is still in the DB
-      // (no accidental purge/rescan), but out of scope.
-      expect(db.getAllDocuments().length).toBe(1);
+      // The document indexed by the earlier "all" scan is out of scope now.
+      // It used to stay in the index file, hidden from results, for good; a
+      // colleague's review of 0.4.3 found no way to clear it. Its text goes.
+      expect(db.getAllDocuments().length).toBe(0);
       expect(db.getInScopeDocumentCount('selected', [], [])).toBe(0);
+    });
+
+    it('an update removes the documents of a search area the user removed, but not those of a disconnected disk', async () => {
+      const folderA = path.join(testBaseDir, 'FolderA');
+      const folderB = path.join(testBaseDir, 'FolderB');
+      createDoc(folderA, 'a.docx');
+      createDoc(folderB, 'b.docx');
+      db.setSearchScopeMode('selected');
+      db.addSearchArea(folderA, 'include');
+      db.addSearchArea(folderB, 'include');
+      await indexAccessibleDocuments(db);
+      expect(db.getAllDocumentPaths().length).toBe(2);
+      // A document indexed from a disk that is not connected now.
+      const elsewhere = process.platform === 'win32' ? 'Q:\\Davalar\\c.docx' : '/Volumes/MetinBul Bagli Olmayan Disk/c.docx';
+      db.upsertDocument({ path: elsewhere, filename: 'c.docx', extension: '.docx', mtime: 1, size: 1, content: 'harici disk', index_status: 'indexed' });
+
+      db.removeSearchArea(folderB);
+      const summary = await indexAccessibleDocuments(db);
+
+      expect(summary.removed).toBe(1);
+      expect(db.getAllDocumentPaths().map(d => d.path).sort()).toEqual([path.join(folderA, 'a.docx'), elsewhere].sort());
     });
 
     it('getAllDocumentPaths returns exactly the same path set as getAllDocuments (path-only projection correctness)', async () => {

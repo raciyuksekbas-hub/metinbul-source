@@ -62,6 +62,8 @@ export interface StartupSettings {
   startAtLoginStatus?: string;
   keepRunningInBackground: boolean;
   backgroundSupported: boolean;
+  /** "Ekran paylaşımında gizle". */
+  contentProtection: boolean;
 }
 
 export interface StartupSettingsResult {
@@ -95,6 +97,8 @@ export interface IndexStatus {
   ocrAvailable: boolean;
   /** Windows has text recognition but not its Turkish component yet. */
   ocrNeedsTurkishComponent: boolean;
+  /** Windows: the computer's security policy keeps PowerShell from running it. */
+  ocrRestricted: boolean;
   ocrSystemName: 'macOS' | 'Windows';
   /** "Taranmış PDF'lerde metin tanıma"; on unless the user turned it off. */
   ocrEnabled: boolean;
@@ -104,6 +108,9 @@ export interface IndexStatus {
   ocrRecognized: number;
   /** Scanned PDFs still waiting for it. */
   ocrPending: number;
+  /** Whether the index file is encrypted, and why not when it is not. */
+  indexEncrypted: boolean;
+  indexEncryptionProblem: string | null;
 }
 
 export interface UnreadableDocumentItem {
@@ -135,7 +142,8 @@ export interface MetinBulRendererApi {
   getSearchAreas: () => Promise<SearchAreaItem[]>;
   addSearchArea: (path: string, type: 'include' | 'exclude') => Promise<boolean>;
   removeSearchArea: (path: string) => Promise<boolean>;
-  selectFolder: () => Promise<string | null>;
+  selectFolder: (purpose?: 'include' | 'exclude') => Promise<string | null>;
+  rebuildIndex: () => Promise<boolean>;
   shouldShowOnboarding: () => Promise<boolean>;
   completeOnboarding: (mode: 'all' | 'selected', folders?: string[], options?: { startAtLogin?: boolean }) => Promise<boolean>;
   getLastSkippedDataless: () => Promise<number>;
@@ -145,6 +153,7 @@ export interface MetinBulRendererApi {
   getStartupSettings: () => Promise<StartupSettings>;
   setStartAtLogin: (enabled: boolean) => Promise<StartupSettingsResult>;
   setKeepRunningInBackground: (enabled: boolean) => Promise<StartupSettingsResult>;
+  setContentProtection: (enabled: boolean) => Promise<StartupSettingsResult>;
   setAutoIndexEnabled: (enabled: boolean) => Promise<IndexStatus>;
   setOcrEnabled: (enabled: boolean) => Promise<IndexStatus>;
   installWindowsTurkishOcr: () => Promise<{ success: boolean; status: IndexStatus }>;

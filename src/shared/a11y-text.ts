@@ -176,3 +176,15 @@ export const ERROR_MESSAGES = {
   searchFailed: SEARCH_STATUS_FAILED,
   indexingFailed: 'İndeksleme tamamlanamadı.'
 } as const;
+
+/**
+ * What "Bilgisayarın Tümü" covers, as the scanner does it (roots.ts,
+ * scanner.ts). On Windows: the user folder and the other local disks.
+ */
+export function getAllScopeNote(windows: boolean): string {
+  return windows
+    ? 'Kullanıcı klasörünüzde ve bilgisayarın diğer yerel disklerinde (D:, E: gibi) arama yapılır. '
+      + 'Programların veri klasörleri (AppData), Windows ve program klasörleri, geri dönüşüm kutusu, '
+      + 'ağ sürücüleri ve Google Drive diski taranmaz.'
+    : 'Bilgisayarınızdaki erişilebilir belge konumlarında arama yapılır. Sistem ve geçici dosya alanları taranmaz.';
+}

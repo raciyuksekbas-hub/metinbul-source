@@ -113,25 +113,32 @@ describe('Background work is limited to the automatic index update', () => {
   });
 
   it('indexes when the user asks, and otherwise only from the automatic update timer', () => {
+    const userCall = /triggerIndexing\((\)|'user', \{ (restart|rebuild): true \}\))/;
     const callers = [...MAIN_TS.matchAll(/\bhandle\('([^']+)'[\s\S]*?\n  \}\);/g)]
-      .filter(m => /triggerIndexing\(\)/.test(m[0]))
+      .filter(m => userCall.test(m[0]))
       .map(m => m[1])
       .sort();
     expect(callers).toEqual([
       'app:addSearchArea',
       'app:completeOnboarding',
+      'app:rebuildIndex',
       'app:removeSearchArea',
       'app:rescan',
       'app:setSearchScopeMode'
     ]);
-    // ...and nowhere else: those five handlers, plus the timer, whose passes
+    // ...and nowhere else: those six handlers, plus the timer, whose passes
     // are marked automatic (quiet, and no retry of unchanged unreadable files).
-    // The one other call continues an update the watchdog had to stop on an
-    // unreadable document, under the same trigger; it starts no new work.
-    expect((MAIN_TS.match(/triggerIndexing\(\)/g) || []).length).toBe(5);
+    // Two other calls continue an update that had to stop: past a document
+    // the watchdog stopped on, under the same trigger, or with settings that
+    // changed under it (the user's request, carried over); neither starts
+    // work nobody asked for.
+    expect((MAIN_TS.match(/triggerIndexing\(\)/g) || []).length).toBe(2);
+    expect((MAIN_TS.match(/triggerIndexing\('user', \{ restart: true \}\)/g) || []).length).toBe(3);
+    expect((MAIN_TS.match(/triggerIndexing\('user', \{ rebuild: true \}\)/g) || []).length).toBe(1);
+    expect(sliceFrom('if (pending && !isQuitting)', 300)).toContain('triggerIndexing(pending.trigger, { rebuild: pending.rebuild })');
     expect((MAIN_TS.match(/triggerIndexing\('auto'\)/g) || []).length).toBe(1);
     expect(sliceFrom('function runAutoIndex()', 400)).toContain("triggerIndexing('auto')");
-    expect(sliceFrom('if (quarantined && !isQuitting)', 800)).toContain('triggerIndexing(trigger, { retryFailed: false })');
+    expect(sliceFrom('if (quarantined && !isQuitting)', 1300)).toContain('triggerIndexing(trigger, { retryFailed: false })');
     expect(sliceFrom('function triggerIndexing(', 1600)).toContain("retryFailed: options.retryFailed ?? trigger === 'user'");
   });
 
@@ -158,7 +165,14 @@ describe('Background work is limited to the automatic index update', () => {
       'renderer/quick-search.ts', 'renderer/settings.ts', 'renderer/settings/index-view.ts',
       'shared/quick-search-model.ts', 'db/database.ts'
     ]
-      .map(rel => ({ rel, text: fs.readFileSync(path.join(SRC_DIR, rel), 'utf-8') }));
+      .map(rel => ({ rel, text: fs.readFileSync(path.join(SRC_DIR, rel), 'utf-8') }))
+      // The one interval allowed: the indexing watchdog's memory watch, armed
+      // when a document starts being read and cleared when it is done (or
+      // the update ends) -- never running while MetinBul is idle.
+      .map(({ rel, text }) => ({ rel, text: rel === 'main/main.ts' ? text.replace('memoryWatch = setInterval(', 'memoryWatch = WATCH(') : text }));
+    const watchdog = sliceFrom('const disarm = () => {', 200);
+    expect(watchdog).toContain('if (memoryWatch) clearInterval(memoryWatch);');
+    expect(MAIN_TS).toMatch(/if \(msg\.type === 'reading'\) \{[\s\S]{0,800}memoryWatch = setInterval\(/);
     for (const { rel, text } of sources) {
       for (const pattern of forbidden) {
         expect(pattern.test(text), `${rel} must not contain ${pattern}`).toBe(false);
@@ -170,7 +184,7 @@ describe('Background work is limited to the automatic index update', () => {
     expect(schedule).toContain('if (!autoIndexEnabled || isQuitting) return;');
     expect(schedule).toContain('setTimeout(runAutoIndex, AUTO_INDEX_INTERVAL_MS)');
     expect((MAIN_TS.match(/setTimeout\(runAutoIndex/g) || []).length).toBe(1);
-    expect(sliceFrom("worker.on('exit'", 1500)).toContain('scheduleAutoIndex();');
+    expect(sliceFrom("worker.on('exit'", 2500)).toContain('scheduleAutoIndex();');
     expect(sliceFrom("app.on('before-quit'", 400)).toContain('clearTimeout(autoIndexTimer)');
     expect(MAIN_TS).toContain("parseBooleanSetting(appDb.getAppSetting('auto_index_enabled'), true)");
   });

@@ -245,7 +245,7 @@ export type KeyPreparation =
   | { status: 'key-lost'; keyHex: string; movedTo: string; reason: string }
   // Stays plain for now: encrypting it failed (tried again at the next start),
   // or nothing can seal a key on this system.
-  | { status: 'migration-failed'; error: string }
+  | { status: 'migration-failed'; error: string; reason?: 'disk-full' }
   | { status: 'no-protector' }
   // Encrypted, but the system cannot unseal keys right now (a locked
   // keychain): nothing is touched and MetinBul cannot open its index.
@@ -258,6 +258,30 @@ export interface PrepareOptions {
   // stay responsive for the few seconds a large index takes.
   encryptExisting: (dbPath: string, keyHex: string) => Promise<void>;
   stamp?: string;
+  // Free space where the index lives (null if unknown); for tests.
+  freeBytes?: (dir: string) => number | null;
+}
+
+/** The index's size and its write-ahead log's, plus 64 MB to spare. */
+export function encryptionSpaceNeeded(dbPath: string): number {
+  let size = 0;
+  for (const suffix of ['', '-wal']) {
+    try {
+      size += fs.statSync(`${dbPath}${suffix}`).size;
+    } catch {
+      // Not there.
+    }
+  }
+  return size + 64 * 1024 * 1024;
+}
+
+function freeBytesAt(dir: string): number | null {
+  try {
+    const stats = fs.statfsSync(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return null;
+  }
 }
 
 /** Decides, at start, how the index is opened, and does what that takes. */
@@ -289,6 +313,11 @@ export async function prepareDatabaseKey(options: PrepareOptions): Promise<KeyPr
     if (existing && keyOpens(dbPath, existing)) return { status: 'encrypted', keyHex: existing };
     const reason = unsealError ?? (existing ? 'the key does not open the index' : 'the key file is missing');
     const movedTo = moveAsideUnreadable(dbPath, stamp);
+    // The old key file goes along with the index it belongs to, under the
+    // same stamp, instead of being overwritten by the new key: should the
+    // system that sealed it come back (a restored keychain, the profile back
+    // on its own computer), the old index can still be opened with it.
+    if (fs.existsSync(keyPath)) fs.renameSync(keyPath, `${keyPath}.unreadable-${stamp}`);
     const keyHex = newKeyHex();
     writeKey(keyPath, keyHex, protector);
     return { status: 'key-lost', keyHex, movedTo, reason };
@@ -302,6 +331,15 @@ export async function prepareDatabaseKey(options: PrepareOptions): Promise<KeyPr
     writeKey(keyPath, keyHex, protector);
   }
   if (format === 'missing') return { status: 'new', keyHex };
+
+  // Rewriting the index in place keeps its old pages in a journal until it
+  // is done: it needs about the index's size again in free space. Without
+  // it, it would fail part way through (and roll back) at every start.
+  const needed = encryptionSpaceNeeded(dbPath);
+  const free = (options.freeBytes ?? freeBytesAt)(path.dirname(dbPath));
+  if (free !== null && free < needed) {
+    return { status: 'migration-failed', error: `not enough free disk space (${Math.round(free / 1024 ** 2)} MB free, ${Math.round(needed / 1024 ** 2)} MB needed)`, reason: 'disk-full' };
+  }
 
   try {
     await options.encryptExisting(dbPath, keyHex);

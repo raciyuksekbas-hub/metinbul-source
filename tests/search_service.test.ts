@@ -1,7 +1,7 @@
 // The search and the counts run on a worker so that a long read can never
 // freeze the windows ("Yanıt Vermiyor" on Windows). The queue is tested against
 // a fake worker, the worker itself is built and run for real.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -21,7 +21,7 @@ class FakeWorker extends EventEmitter implements ReadWorker {
   answer(id: number, value: unknown) { this.emit('message', { id, value } satisfies ReadResponse); }
 }
 
-function fakeService() {
+function fakeService(idleMs?: number) {
   const workers: FakeWorker[] = [];
   let cancelled = new Int32Array(new SharedArrayBuffer(4));
   const service = new SearchService(buffer => {
@@ -29,11 +29,55 @@ function fakeService() {
     const worker = new FakeWorker();
     workers.push(worker);
     return worker;
-  });
+  }, idleMs);
   return { service, workers, cancelledId: () => Atomics.load(cancelled, 0) };
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+describe('the search worker between searches', () => {
+  it('is ended after a few idle minutes, and a new one answers the next search', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, workers } = fakeService(3 * 60 * 1000);
+      const count = service.documentCount();
+      workers[0].answer(workers[0].posted[0].id, 3);
+      expect(await count).toBe(3);
+
+      vi.advanceTimersByTime(2 * 60 * 1000);
+      // A job within the idle time keeps it.
+      const again = service.documentCount();
+      workers[0].answer(workers[0].posted[1].id, 3);
+      await again;
+      vi.advanceTimersByTime(2 * 60 * 1000);
+      expect(workers[0].terminated).toBe(false);
+
+      vi.advanceTimersByTime(60 * 1000 + 1);
+      expect(workers[0].terminated).toBe(true);
+      // Its exit is expected: nothing fails because of it.
+      workers[0].emit('exit');
+
+      const later = service.documentCount();
+      expect(workers).toHaveLength(2);
+      workers[1].answer(workers[1].posted[0].id, 4);
+      expect(await later).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is not ended while a job runs', () => {
+    vi.useFakeTimers();
+    try {
+      const { service, workers } = fakeService(1000);
+      void service.documentCount();
+      vi.advanceTimersByTime(10_000);
+      expect(workers[0].terminated).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('the search queue', () => {
   it('asks the worker one thing at a time, in order', async () => {

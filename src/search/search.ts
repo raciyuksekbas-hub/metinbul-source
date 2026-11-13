@@ -1,4 +1,4 @@
-import { AppDatabase, normalizeForSearch } from '../db/database.js';
+import { AppDatabase, foldCircumflex, normalizeForSearch } from '../db/database.js';
 import { isPathExcluded, isPathOrSubpath } from '../scanner/scanner.js';
 
 export interface SearchResult {
@@ -55,12 +55,13 @@ export function normalizeQueryQuotes(userQuery: string): string {
   return (userQuery || '').replace(TYPOGRAPHIC_DOUBLE_QUOTES, '"');
 }
 
-export function buildFtsQuery(userQuery: string): string | null {
+export function buildFtsQuery(userQuery: string, normalize: (text: string) => string = normalizeForSearch): string | null {
   if (!userQuery || !userQuery.trim()) {
     return null;
   }
 
-  const normalized = normalizeForSearch(normalizeQueryQuotes(userQuery));
+  // As the search table holds its text (AppDatabase.normalizeForSearchTable).
+  const normalized = normalize(normalizeQueryQuotes(userQuery));
   // Remove quote and control characters, normalize multiple spaces
   const clean = normalized.replace(/[\"']/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -111,8 +112,10 @@ function findMatchOccurrences(
 ): MatchOccurrence[] {
   if (!cleanQuery) return [];
 
-  const lowerContent = cleanContent.toLocaleLowerCase('tr-TR');
-  const lowerQuery = cleanQuery.toLocaleLowerCase('tr-TR');
+  // Circumflexes folded as in the search table, one letter for one, so the
+  // positions found here are the original text's.
+  const lowerContent = foldCircumflex(cleanContent.toLocaleLowerCase('tr-TR'));
+  const lowerQuery = foldCircumflex(cleanQuery.toLocaleLowerCase('tr-TR'));
   if (!lowerQuery) return [];
 
   const occurrences: MatchOccurrence[] = [];
@@ -257,8 +260,8 @@ export function generateCustomSnippet(
   }
 
   // 2. Case-insensitive search using Turkish locale
-  const lowerContentTr = cleanContent.toLocaleLowerCase('tr-TR');
-  const lowerQueryTr = cleanQuery.toLocaleLowerCase('tr-TR');
+  const lowerContentTr = foldCircumflex(cleanContent.toLocaleLowerCase('tr-TR'));
+  const lowerQueryTr = foldCircumflex(cleanQuery.toLocaleLowerCase('tr-TR'));
 
   let matchIndex = lowerContentTr.indexOf(lowerQueryTr);
   let matchLength = cleanQuery.length;
@@ -346,7 +349,7 @@ export function search(
   const exactMode = isExactPhraseQuery(query);
   const exactPhrase = exactMode ? extractExactPhrase(query) : '';
 
-  const ftsQuery = buildFtsQuery(exactMode ? exactPhrase : query);
+  const ftsQuery = buildFtsQuery(exactMode ? exactPhrase : query, text => appDb.normalizeForSearchTable(text));
   if (!ftsQuery) {
     return [];
   }
@@ -385,6 +388,13 @@ export function search(
   // load and sort the full text of every match just to throw most of it away,
   // so a common word over a large index took seconds. These columns sit before
   // the text in the row, so reading them does not touch it.
+  //
+  // The scope is applied in the query, before the limit. It used to be
+  // applied to the first 1,000 matches afterwards, so with "Sadece Belirli
+  // Klasörler" a common word whose newest 1,000 matches lay elsewhere gave
+  // no results from the chosen folders at all (a colleague's review of 0.4.3).
+  appDb.db.function('metinbul_in_scope', { deterministic: true }, (docPath: unknown) =>
+    typeof docPath === 'string' && isDocumentInScope(docPath, mode, includedPaths, excludedPaths) ? 1 : 0);
   const sql = `
     SELECT
       d.id,
@@ -394,12 +404,12 @@ export function search(
       d.mtime
     FROM documents_fts
     JOIN documents d ON d.id = documents_fts.rowid
-    WHERE documents_fts MATCH ?
+    WHERE documents_fts MATCH ? AND metinbul_in_scope(d.path)
     ORDER BY ${orderBy}
     LIMIT ?
   `;
 
-  // Fetch candidate rows up to 1000 and filter by active scope
+  // Up to 1000 candidates in scope (exact mode can still drop some below).
   const fetchLimit = 1000;
   const rows = appDb.db.prepare(sql).all(ftsQuery, fetchLimit) as {
     id: number;

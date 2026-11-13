@@ -116,6 +116,17 @@ export function absolutePath(value: unknown, platform: NodeJS.Platform = process
   return pathApi.isAbsolute(text) ? text : null;
 }
 
+/**
+ * A Windows network path (\\server\share, \\?\UNC\..., //server/share).
+ * Merely looking one up makes Windows connect to that server and offer it the
+ * user's sign-in (NTLM), so a page must not be able to name one: the
+ * folder-adding channels take such a path only when the folder picker
+ * returned it in this session.
+ */
+export function isNetworkPath(value: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' && /^[\\/]{2}/.test(value);
+}
+
 export type SearchAreaType = 'include' | 'exclude';
 
 export function isSearchAreaType(value: unknown): value is SearchAreaType {

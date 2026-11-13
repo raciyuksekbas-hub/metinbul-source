@@ -52,12 +52,16 @@ describe('macOS panel behaviour (spec §10, §11, §31)', () => {
     expect(create()).toContain('setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })');
   });
 
-  it('opens on the display under the pointer', () => {
-    expect(sliceFrom('function placeQuickSearchWindow(', 600)).toContain('screen.getDisplayNearestPoint(screen.getCursorScreenPoint())');
+  it('opens on the display under the pointer, on Windows too', () => {
+    const place = sliceFrom('function placeQuickSearchWindow(', 1400);
+    expect(place).toContain('const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());');
+    // Windows moves the window only when it is on another screen.
+    expect(place).toMatch(/if \(screen\.getDisplayMatching\(win\.getBounds\(\)\)\.id !== display\.id\)/);
   });
 
-  it('dismisses itself when the user clicks into another app, but not for its own context menu', () => {
+  it('dismisses itself when the user clicks into another app, but not for its own context menu -- on every platform', () => {
     expect(create()).toMatch(/win\.on\('blur', \(\) => \{\s*if \(!quickSearchMenuOpen\) hideQuickSearch\('blur'\);/);
+    expect(create()).not.toMatch(/if \(isMac\) \{\s*win\.on\('blur'/);
     expect(sliceFrom("handle('quick-search:showResultMenu'", 1200)).toMatch(/quickSearchMenuOpen = true;[\s\S]*?callback: \(\) => \{\s*quickSearchMenuOpen = false;/);
   });
 });

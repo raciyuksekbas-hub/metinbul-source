@@ -23,6 +23,14 @@ describe('the Windows text recognition script', () => {
     }
   });
 
+  it('says so when PowerShell is locked down, and releases each page once read', () => {
+    for (const script of [buildWindowsOcrScript(), buildWindowsOcrScript('C:\\Temp\\job.json')]) {
+      // Before anything a locked-down PowerShell would refuse.
+      expect(script.split('\n')[1]).toBe("if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { exit 5 }");
+    }
+    expect(buildWindowsOcrScript('C:\\Temp\\job.json')).toMatch(/RecognizeAsync[\s\S]*\$bitmap\.Dispose\(\); \$stream\.Dispose\(\); \$page\.Dispose\(\)/);
+  });
+
   it('only checks when it has no job', () => {
     const check = buildWindowsOcrScript();
     expect(check).not.toContain('RecognizeAsync');

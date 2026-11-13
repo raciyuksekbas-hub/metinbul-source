@@ -89,6 +89,10 @@ jobs:
         timeout-minutes: 12
         run: node scripts/windows/tray-smoke.mjs release/win-unpacked/MetinBul.exe
 
+      - name: Smoke test - a 120-page scanned PDF and a PDF that fills memory, in the packaged app
+        timeout-minutes: 30
+        run: node scripts/windows/indexing-smoke.mjs release/win-unpacked/MetinBul.exe
+
       - name: Smoke test - install, shortcut check, launch installed exe, and uninstall
         shell: pwsh
         run: |
@@ -154,6 +158,17 @@ jobs:
              }
           }
           
+          # The index lives in %LOCALAPPDATA%\MetinBul; 0.4.4 and earlier kept it
+          # in the roaming profile. The first launch above made one: put it
+          # where 0.4.4 had it, and see the installed app move it back.
+          $roamingDir = "$env:APPDATA\MetinBul"
+          $localDir = "$env:LOCALAPPDATA\MetinBul"
+          if (-not (Test-Path "$localDir\metinbul.db")) { throw "The first launch made no index in $localDir" }
+          if (Test-Path "$roamingDir\metinbul.db") { throw "The first launch put the index in the roaming profile" }
+          New-Item -ItemType Directory -Force $roamingDir | Out-Null
+          Get-ChildItem $localDir -Filter 'metinbul.*' | Move-Item -Destination $roamingDir -Force
+          Write-Host "Index files placed as 0.4.4 had them: $((Get-ChildItem $roamingDir -Filter 'metinbul.*').Name -join ', ')"
+
           # Launch installed app
           $installedExe = "$installDir\MetinBul.exe"
           Write-Host "Launching installed executable: $installedExe"
@@ -163,8 +178,18 @@ jobs:
              throw "Installed MetinBul.exe exited early with code $($proc.ExitCode)"
           }
           Write-Host "Installed app running with PID $($proc.Id)"
+          if (-not (Test-Path "$localDir\metinbul.db") -or -not (Test-Path "$localDir\metinbul.key")) { throw "The index was not moved to $localDir" }
+          if (Test-Path "$roamingDir\metinbul.db") { throw "The index was left in the roaming profile" }
+          Write-Host "The index moved out of the roaming profile to $localDir."
           Stop-Process -Id $proc.Id -Force
           Start-Sleep -Seconds 2
+
+          # "Start at sign-in" values for this MetinBul (with and without
+          # quotes), and one of another program's, for the uninstaller.
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-ItemProperty -Path $runKey -Name 'electron.app.MetinBul' -Value "`"$installedExe`" --metinbul-autostart" -Force | Out-Null
+          New-ItemProperty -Path $runKey -Name 'MetinBul eski kayit' -Value "$installedExe --metinbul-autostart" -Force | Out-Null
+          New-ItemProperty -Path $runKey -Name 'Baska Program' -Value '"C:\Windows\notepad.exe"' -Force | Out-Null
           
           # Test uninstaller
           $uninstaller = "$installDir\Uninstall MetinBul.exe"
@@ -174,11 +199,26 @@ jobs:
           if ($uninstaller) {
              Write-Host "Running uninstaller silently: $uninstaller"
              Start-Process -FilePath $uninstaller -ArgumentList "/S" -PassThru -Wait
-             Start-Sleep -Seconds 5
+             # The uninstaller hands over to a copy of itself; wait for that.
+             $deadline = (Get-Date).AddSeconds(60)
+             while ((Test-Path "$installDir\MetinBul.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+             Start-Sleep -Seconds 3
              if (Test-Path "$installDir\MetinBul.exe") {
                 throw "Uninstaller failed to delete MetinBul.exe!"
              }
              Write-Host "Uninstaller successfully cleaned up the installation."
+             $left = Get-ItemProperty -Path $runKey
+             if ($left.PSObject.Properties.Name -contains 'electron.app.MetinBul' -or $left.PSObject.Properties.Name -contains 'MetinBul eski kayit') {
+                throw "The uninstaller left MetinBul's start-at-sign-in entry behind"
+             }
+             if ($left.PSObject.Properties.Name -notcontains 'Baska Program') {
+                throw "The uninstaller removed another program's start-at-sign-in entry"
+             }
+             Remove-ItemProperty -Path $runKey -Name 'Baska Program'
+             Write-Host "The uninstaller removed MetinBul's start-at-sign-in entries and nothing else."
+             # Asked, never taken for granted: a silent uninstall keeps the index.
+             if (-not (Test-Path "$localDir\metinbul.db")) { throw "A silent uninstall deleted the index" }
+             Write-Host "A silent uninstall kept the index."
           } else {
              Write-Host "Warning: Uninstaller not found!"
           }

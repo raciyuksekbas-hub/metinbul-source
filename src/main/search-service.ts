@@ -54,8 +54,18 @@ export class SearchService {
   private worker: ReadWorker | null = null;
   private nextId = 1;
   private closed = false;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly spawn: (cancelledSearch: SharedArrayBuffer) => ReadWorker) {}
+  /**
+   * `idleMs`: the worker is ended after this long without a job, and the next
+   * search starts a new one (a few tens of ms). Its heap grows with searching
+   * and is not given back -- a review measured 26 to 81 MB after 400 searches
+   * -- and MetinBul mostly sits in the background between them.
+   */
+  constructor(
+    private readonly spawn: (cancelledSearch: SharedArrayBuffer) => ReadWorker,
+    private readonly idleMs = 3 * 60 * 1000
+  ) {}
 
   search(sender: number, query: string, sort: SearchSort, limit: number): Promise<SearchOutcome> {
     this.replaceSearchesOf(sender);
@@ -83,6 +93,7 @@ export class SearchService {
 
   close(): void {
     this.closed = true;
+    this.clearIdleTimer();
     this.worker?.terminate();
     this.worker = null;
     const unfinished = [...(this.running ? [this.running] : []), ...this.waiting.splice(0)];
@@ -123,7 +134,11 @@ export class SearchService {
   private startNext(): void {
     if (this.running) return;
     const job = this.waiting.shift();
-    if (!job) return;
+    if (!job) {
+      this.armIdleTimer();
+      return;
+    }
+    this.clearIdleTimer();
     try {
       this.worker ??= this.startWorker();
       this.running = job;
@@ -133,6 +148,25 @@ export class SearchService {
       job.fail(error instanceof Error ? error.message : String(error));
       this.startNext();
     }
+  }
+
+  private armIdleTimer(): void {
+    this.clearIdleTimer();
+    if (!this.worker || this.closed) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      const idle = this.worker;
+      if (!idle || this.running || this.waiting.length > 0) return;
+      // Forgotten first, so its exit is not taken for a lost job.
+      this.worker = null;
+      idle.terminate();
+    }, this.idleMs);
+    (this.idleTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
   }
 
   private startWorker(): ReadWorker {

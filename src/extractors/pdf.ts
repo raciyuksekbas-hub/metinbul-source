@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { PDF_MAX_FILE_BYTES } from './limits.js';
 import { readFileWithinLimit } from './read-file.js';
+import { preparePdfjsForTextOnly } from './pdfjs-env.js';
 
 // The PDF's text layer, page by page. Text recognition decides per page:
 // a scanned page often carries a line or two of real text (a scanner stamp,
@@ -16,6 +17,7 @@ export async function extractPdfPages(filePath: string): Promise<string[]> {
     // before handing it on, which would hold the PDF in memory twice.
     const dataBuffer = new Uint8Array(fileData.buffer, fileData.byteOffset, fileData.byteLength);
 
+    preparePdfjsForTextOnly();
     const pdfModule = await import('pdf-parse');
     const pdf = (pdfModule as any).default || pdfModule;
 

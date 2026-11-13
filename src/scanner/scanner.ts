@@ -46,6 +46,17 @@ export interface ScanStats {
   // are not read, and the indexer removes what an earlier version indexed
   // under them.
   refusedPaths?: Set<string>;
+  // Windows: files whose attributes could not be read (the reader timed out or
+  // could not start). Not read -- it might be a cloud placeholder -- but not
+  // counted as cloud-only either, and their index entries stay.
+  unverifiedPaths?: Set<string>;
+}
+
+export interface ScanOptions {
+  // Windows: leave the attribute check (one PowerShell per 1,000 files) to the
+  // caller, who knows which files it will actually read. Without it, every
+  // update checked every document again, changed or not.
+  deferWindowsAvailability?: boolean;
 }
 
 function realPathsOf(target: string): string[] {
@@ -197,9 +208,16 @@ export async function filterLocallyAvailableFiles(
   const locallyAvailable: ScannedFile[] = [];
 
   for (const file of files) {
-    // Fail closed: a candidate whose attributes could not be read is treated as
-    // online-only, because reading it to find out is exactly what must not happen.
-    if (isWindowsOnlineOnlyPlaceholder(attributesByPath.get(file.path))) {
+    const attributes = attributesByPath.get(file.path);
+    // Fail closed: a candidate whose attributes could not be read is not read,
+    // because reading it to find out is exactly what must not happen. It is
+    // not reported as cloud-only, though: a reader that timed out says
+    // nothing about where the file is.
+    if (attributes === undefined) {
+      scanStats?.unverifiedPaths?.add(file.path);
+      continue;
+    }
+    if (isWindowsOnlineOnlyPlaceholder(attributes)) {
       recordSkippedDataless(scanStats, file.path);
       continue;
     }
@@ -300,6 +318,39 @@ export function shouldSkipFile(filename: string, stats?: fs.Stats, fallbackFlags
   return false;
 }
 
+// Never documents of the user's, wherever they are and whoever chose the
+// folder above them: the recycle bins (a deleted document must not stay
+// searchable) and Windows' own bookkeeping, which it also writes onto
+// external disks that a Mac may mount.
+export const ALWAYS_SKIPPED_DIR_NAMES = new Set([
+  '$recycle.bin',
+  'recycler',
+  'system volume information',
+  '$windows.~bt',
+  '$windows.~ws',
+  '$winreagent',
+  '$sysreset',
+  'config.msi'
+]);
+
+// Windows' and installed programs' folders at the top of a disk: skipped
+// when a whole disk is searched ("Bilgisayarın Tümü" covers D:, E: ... and a
+// user can add a disk), never when the user picked the folder itself.
+export const WINDOWS_DISK_SYSTEM_DIR_NAMES = new Set([
+  'windows',
+  'windows.old',
+  'program files',
+  'program files (x86)',
+  'programdata',
+  'perflogs',
+  'recovery',
+  'msocache'
+]);
+
+function isWindowsDiskRoot(dir: string): boolean {
+  return /^[a-z]:[\\/]?$/i.test(dir);
+}
+
 export function shouldSkipDirectory(
   dirName: string,
   fullPath: string,
@@ -310,6 +361,26 @@ export function shouldSkipDirectory(
   
   // 1. User Explicit Exclude (Highest Priority)
   if (isPathExcluded(fullPath, excludedPaths)) {
+    return true;
+  }
+
+  const lowerDirName = dirName.toLowerCase();
+  if (ALWAYS_SKIPPED_DIR_NAMES.has(lowerDirName)) {
+    return true;
+  }
+  if (process.platform === 'win32' && isWindowsDiskRoot(path.dirname(fullPath))
+    && WINDOWS_DISK_SYSTEM_DIR_NAMES.has(lowerDirName)
+    && !explicitIncludes.some(inc => isPathOrSubpath(fullPath, inc))) {
+    return true;
+  }
+  // Programs' data (AppData), as ~/Library on macOS: a review counted 13,294
+  // documents there on a lawyer's Windows -- a legal program's own files and
+  // the temp folder -- and none of the user's. Skipped even below a folder the
+  // user picked (their user folder, say), unless they picked something inside
+  // it.
+  if (process.platform === 'win32' && lowerDirName === 'appdata'
+    && path.resolve(path.dirname(fullPath)).toLowerCase() === path.resolve(os.homedir()).toLowerCase()
+    && !explicitIncludes.some(inc => isPathOrSubpath(fullPath, inc))) {
     return true;
   }
 
@@ -354,7 +425,8 @@ export async function scanDirectory(
   excludedPaths: string[] = [],
   explicitIncludes: string[] = [],
   scanStats?: ScanStats,
-  exclusions: string[] = resolveExclusions(excludedPaths)
+  exclusions: string[] = resolveExclusions(excludedPaths),
+  options: ScanOptions = {}
 ): Promise<ScannedFile[]> {
   const results: ScannedFile[] = [];
   const refuse = (lexicalPath: string) => scanStats?.refusedPaths?.add(lexicalPath);
@@ -404,13 +476,24 @@ export async function scanDirectory(
   // the read hangs for as long as the provider does. `order` is an entry's
   // position along the path from the root, so the documents still come out
   // in the order of a depth-first walk.
-  interface Found { path: string; order: number[]; stats?: fs.Stats }
+  //
+  // A folder counts as visited only once its listing has been read. Turkish
+  // Windows keeps an old "Belgelerim" junction in the user folder that leads
+  // to Documents but may not be listed (Everyone: deny list folder); marked
+  // visited before the read, it made the real Documents folder look done
+  // already, and nothing in it was ever indexed. Within a level, real folders
+  // also go before links, so a folder reached both ways is read -- and its
+  // documents named -- under its own path.
+  interface Found { path: string; order: number[]; stats?: fs.Stats; viaLink?: boolean }
   const candidates: Array<Found & { filename: string; extension: string; stats: fs.Stats }> = [];
   let level: Array<{ dir: string; realDir: string; order: number[] }> = [{ dir: dirPath, realDir: realRoot, order: [] }];
 
+  let atRoot = true;
   while (level.length > 0) {
     const subfolders: Found[] = [];
     for (const { dir: currentDir, realDir, order } of level) {
+      // The root was recorded above, under both of its spellings.
+      if (!atRoot && visitedDirs.has(realDir)) continue;
       let entries: fs.Dirent[] | 'timeout';
       try {
         entries = await readDirectoryWithinLimit(currentDir);
@@ -422,6 +505,7 @@ export async function scanDirectory(
         scanStats?.unansweredDirectories?.add(currentDir);
         continue;
       }
+      visitedDirs.add(realDir);
       // Empty listings are recorded too (a folder whose last file was deleted is
       // empty), but the indexer does not take an empty folder as proof that a
       // missing subfolder was deleted: an unmounted mount point or a signed-out
@@ -455,7 +539,7 @@ export async function scanDirectory(
             if (stat.isDirectory()) {
               if (!shouldSkipDirectory(entry.name, fullPath, excludedPaths, explicitIncludes)
                 && !shouldSkipDirectory(path.basename(target), target, excludedPaths, explicitIncludes)) {
-                subfolders.push({ path: fullPath, order: entryOrder, stats: stat });
+                subfolders.push({ path: fullPath, order: entryOrder, stats: stat, viaLink: true });
               }
             } else if (stat.isFile() && SUPPORTED_EXTENSIONS.has(ext)
               // The file it leads to has to be a document too: a link named
@@ -477,9 +561,11 @@ export async function scanDirectory(
       }
     }
 
+    atRoot = false;
     const folderFlags = await readDarwinFileFlags(subfolders.map(folder => folder.path));
     const next: typeof level = [];
-    for (const folder of subfolders) {
+    const realFoldersFirst = [...subfolders.filter(folder => !folder.viaLink), ...subfolders.filter(folder => folder.viaLink)];
+    for (const folder of realFoldersFirst) {
       if (isDatalessPlaceholder(folder.stats, folderFlags.get(folder.path))) {
         scanStats?.cloudOnlyDirectories?.add(folder.path);
         continue;
@@ -491,8 +577,10 @@ export async function scanDirectory(
           refuse(folder.path);
           continue;
         }
+        // Recorded as visited when its listing is read (above). The same
+        // folder may be queued under several names; the first one that can
+        // be listed is the one that counts.
         if (!visitedDirs.has(realSub)) {
-          visitedDirs.add(realSub);
           next.push({ dir: folder.path, realDir: realSub, order: folder.order });
         }
       } catch {
@@ -523,7 +611,7 @@ export async function scanDirectory(
 
   // Windows cloud placeholders are invisible to stat(); resolve their content
   // availability from file attributes before these candidates go any further.
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && !options.deferWindowsAvailability) {
     return await filterLocallyAvailableFiles(results, scanStats);
   }
 
@@ -534,7 +622,8 @@ export async function scanDirectories(
   dirPaths: string[],
   excludedPaths: string[] = [],
   explicitIncludes: string[] = [],
-  scanStats?: ScanStats
+  scanStats?: ScanStats,
+  options: ScanOptions = {}
 ): Promise<ScannedFile[]> {
   // Availability is re-established from scratch on every scan: a file that was
   // locally available during the previous run may have been dehydrated since.
@@ -546,7 +635,7 @@ export async function scanDirectories(
   const exclusions = resolveExclusions(excludedPaths);
 
   for (const dir of dirPaths) {
-    const files = await scanDirectory(dir, visitedDirs, excludedPaths, explicitIncludes, scanStats, exclusions);
+    const files = await scanDirectory(dir, visitedDirs, excludedPaths, explicitIncludes, scanStats, exclusions, options);
     for (const file of files) {
       if (!seenPaths.has(file.path)) {
         seenPaths.add(file.path);

@@ -11,6 +11,7 @@ import { AppDatabase, normalizeForSearch } from '../../src/db/database.js';
 import {
   databaseFormat,
   decryptInPlace,
+  encryptionSpaceNeeded,
   encryptInPlace,
   KEY_FILE_NAME,
   KeyProtector,
@@ -287,6 +288,29 @@ describe('what happens at start', { timeout: 30_000 }, () => {
     expect(keyOpens(movedTo, (first as { keyHex: string }).keyHex)).toBe(true);
     expect(fs.existsSync(dbPath)).toBe(false);
     expect(keyHex).not.toBe((first as { keyHex: string }).keyHex);
+    // The old key file is kept beside it, not overwritten: should the system
+    // that sealed it come back, the old index opens again.
+    const oldKeyPath = path.join(base, `${KEY_FILE_NAME}.unreadable-T1`);
+    expect(readKey(oldKeyPath, fakeProtector())).toBe((first as { keyHex: string }).keyHex);
+    expect(readKey(path.join(base, KEY_FILE_NAME), fakeProtector(0x33))).toBe(keyHex);
+  });
+
+  it('a plain index is not encrypted without the free space it takes, and says so', async () => {
+    const dbPath = path.join(base, 'metinbul.db');
+    fillIndex(dbPath);
+    const before = fs.readFileSync(dbPath);
+    let tried = false;
+    const result = await prepareDatabaseKey({
+      dbPath, protector: fakeProtector(),
+      encryptExisting: async () => { tried = true; },
+      freeBytes: () => 10 * 1024 * 1024
+    });
+    expect(result).toMatchObject({ status: 'migration-failed', reason: 'disk-full' });
+    expect(tried).toBe(false);
+    expect(fs.readFileSync(dbPath).equals(before)).toBe(true);
+    // With the space it needs, it goes ahead.
+    const later = await prepareDatabaseKey({ dbPath, protector: fakeProtector(), encryptExisting, freeBytes: () => encryptionSpaceNeeded(dbPath) });
+    expect(later.status).toBe('migrated');
   });
 
   it('a system that cannot unseal keys right now (a locked keychain) touches nothing', async () => {

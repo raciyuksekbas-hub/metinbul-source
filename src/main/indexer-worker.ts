@@ -21,6 +21,8 @@ interface WorkerData {
   // Set when text recognition is available and turned on. helperPath is the
   // macOS helper; Windows needs none.
   ocr?: { helperPath?: string; budgetMs: number };
+  // "Dizini sil ve yeniden oluştur": empty the index first.
+  rebuild?: boolean;
 }
 
 type WorkerMessage =
@@ -29,11 +31,24 @@ type WorkerMessage =
   | { type: 'done'; summary: IndexSummary }
   | { type: 'error'; message: string };
 
+// The main process asks the update to stop when the search areas change under
+// it; it then starts a new one with the new settings.
+let stopRequested = false;
+parentPort?.on('message', (message: unknown) => {
+  if ((message as { type?: string } | null)?.type === 'stop') stopRequested = true;
+});
+// Listening must not keep the thread alive once the update is done.
+parentPort?.unref();
+
 async function run() {
-  const { dbPath, keyHex, retryFailed, ocr } = workerData as WorkerData;
+  const { dbPath, keyHex, retryFailed, ocr, rebuild } = workerData as WorkerData;
   const db = new AppDatabase(dbPath, { keyHex });
 
   try {
+    if (rebuild) db.clearDocuments();
+    // A search table made by 0.4.4 or earlier is rebuilt once, in the
+    // current form (circumflex folding; no second copy of the text).
+    db.upgradeSearchTable({ shouldStop: () => stopRequested });
     const summary = await indexAccessibleDocuments(db, (progress) => {
       parentPort?.postMessage({ type: 'progress', progress } satisfies WorkerMessage);
     }, {
@@ -44,7 +59,8 @@ async function run() {
       },
       ocr: ocr
         ? { engine: ocr.helperPath ? createMacosOcrEngine(ocr.helperPath) : createWindowsOcrEngine(), budgetMs: ocr.budgetMs }
-        : undefined
+        : undefined,
+      shouldStop: () => stopRequested
     });
     parentPort?.postMessage({ type: 'done', summary } satisfies WorkerMessage);
   } catch (error) {

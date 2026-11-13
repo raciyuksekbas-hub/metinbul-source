@@ -11,6 +11,7 @@ import {
   findForbiddenSwitch,
   hasOpenableExtension,
   isAllowedExternalUrl,
+  isNetworkPath,
   isOpenableDocument,
   isSearchAreaType,
   isSearchScopeMode,
@@ -160,6 +161,36 @@ describe('what a renderer may have opened', () => {
     expect(isSearchAreaType('INCLUDE') || isSearchAreaType('')).toBe(false);
     expect(isSearchScopeMode('all') && isSearchScopeMode('selected')).toBe(true);
     expect(isSearchScopeMode('everything')).toBe(false);
+  });
+});
+
+describe('hiding MetinBul from screen sharing', () => {
+  it('is applied to every window when made and when the setting changes', () => {
+    const main = read('src/main/main.ts');
+    expect(main).toContain("contentProtection = parseBooleanSetting(appDb.getAppSetting('content_protection'), false);");
+    expect(main).toMatch(/quickSearchWindow = win;\s*win\.setContentProtection\(contentProtection\);/);
+    expect(main).toMatch(/settingsWindow = win;\s*win\.setContentProtection\(contentProtection\);/);
+    expect(main).toMatch(/mainWindow = new BrowserWindow\(\{[\s\S]*?\n  \}\);\s*mainWindow\.setContentProtection\(contentProtection\);/);
+    expect(main).toMatch(/handle\('app:setContentProtection'[\s\S]{0,300}for \(const win of allWindows\(\)\) win\.setContentProtection\(contentProtection\);/);
+  });
+});
+
+describe('network folders a page names', () => {
+  it('are recognised in every Windows spelling, and only on Windows', () => {
+    for (const p of ['\\\\sunucu\\pay', '\\\\?\\UNC\\sunucu\\pay', '//sunucu/pay', '\\\\192.168.1.5\\Belgeler']) {
+      expect(isNetworkPath(p, 'win32'), p).toBe(true);
+    }
+    expect(isNetworkPath('C:\\Users\\Ali\\Belgeler', 'win32')).toBe(false);
+    expect(isNetworkPath('//Volumes/Pay', 'darwin')).toBe(false);
+  });
+
+  it('are taken only when the folder picker returned them in this session', () => {
+    const main = read('src/main/main.ts');
+    expect(main).toMatch(/function isPickedOrLocal\(folderPath: string\): boolean \{\s*return !isNetworkPath\(folderPath\) \|\| pickedFolders\.has\(folderPath\);/);
+    // Before anything looks the folder up.
+    expect(main).toMatch(/handle\('app:addSearchArea'[\s\S]{0,400}if \(!isPickedOrLocal\(folderPath\)\) return false;\s*if \(!fs\.statSync/);
+    expect(main).toMatch(/handle\('app:completeOnboarding'[\s\S]{0,700}if \(folderPath && isPickedOrLocal\(folderPath\)\)/);
+    expect(main).toMatch(/pickedFolders\.add\(folder\);\s*return folder;/);
   });
 });
 

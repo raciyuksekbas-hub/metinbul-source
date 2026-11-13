@@ -24,5 +24,17 @@ npm run package:mac  # macOS paketi (imzalama: docs/macos-signing.md)
 npm run package:win  # Windows kurulum dosyası
 ```
 
+npm 11 (Node.js 24 ile gelir) bağımlılıkların kurulum betiklerini, onaylanmadıkça
+çalıştırmaz. Gerekeni `package.json` içindeki `allowScripts` onaylar: esbuild'in
+kendi ikili dosyasını kuran betiği. Bir bağımlılık güncellenip yeni bir betik
+onay beklerse `npm install-scripts ls` onu gösterir; inceledikten sonra
+`npm install-scripts approve <paket>` ile onaylayın.
+
+Electron'un kendisi ilk çalıştırmada indirilmezse:
+
+```bash
+node node_modules/electron/install.js
+```
+
 Gerçek belgelerden oluşan birkaç test örneği, gizlilik nedeniyle yayınlanan
 kaynak paketinde yer almaz.

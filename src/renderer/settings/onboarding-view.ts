@@ -7,6 +7,8 @@
 // (Windows/Linux), so both platforms ask exactly the same thing.
 import { escapeHtml } from '../result-card.js';
 import { announce } from '../announcer.js';
+import { getAllScopeNote } from '../../shared/a11y-text.js';
+import { recordShortcut } from './shortcut-recorder.js';
 
 export interface OnboardingViewOptions {
   /** Called after the choice has been saved and the first scan started. */
@@ -14,10 +16,14 @@ export interface OnboardingViewOptions {
 }
 
 export async function renderOnboardingView(container: HTMLElement, options: OnboardingViewOptions): Promise<void> {
-  const [startup, shortcut] = await Promise.all([
+  const startupAndShortcut = await Promise.all([
     window.api.getStartupSettings(),
     window.api.getQuickSearchShortcut()
   ]);
+  const startup = startupAndShortcut[0];
+  let shortcut = startupAndShortcut[1];
+  // What the last attempt to change the shortcut came to.
+  let shortcutStatus = '';
 
   let mode: 'all' | 'selected' = 'all';
   let folders: string[] = [];
@@ -57,6 +63,7 @@ export async function renderOnboardingView(container: HTMLElement, options: Onbo
             </span>
           </div>
         </div>
+        ${mode === 'all' ? `<p class="settings-note">${escapeHtml(getAllScopeNote(/Windows/.test(navigator.userAgent)))}</p>` : ''}
 
         ${mode === 'selected' ? `
           <section class="settings-group" aria-labelledby="onboarding-folders-title">
@@ -77,7 +84,17 @@ export async function renderOnboardingView(container: HTMLElement, options: Onbo
             </div>
           </div>` : ''}
 
-        <p class="settings-note">Kurulumdan sonra herhangi bir uygulamadayken <kbd class="settings-kbd">${escapeHtml(shortcut.display || shortcut.accelerator)}</kbd> ile arayabilirsiniz.</p>
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-row-label" id="onboarding-shortcut-label">Hızlı Arama kısayolu</span>
+            <span class="settings-row-end">
+              <kbd class="settings-kbd" id="onboarding-shortcut-current" aria-labelledby="onboarding-shortcut-label onboarding-shortcut-current">${escapeHtml(shortcut.display || shortcut.accelerator)}</kbd>
+              <button id="btn-onboarding-shortcut" class="btn-secondary-sm" type="button" aria-describedby="onboarding-shortcut-note">Değiştir</button>
+            </span>
+          </div>
+        </div>
+        <p class="settings-note" id="onboarding-shortcut-note">Kurulumdan sonra hangi programda olursanız olun bu kısayol MetinBul’un arama alanını açar. Bu tuşları başka bir programda kullanıyorsanız değiştirin.</p>
+        <p id="onboarding-shortcut-status" class="settings-status" ${shortcutStatus ? '' : 'hidden'}>${escapeHtml(shortcutStatus)}</p>
 
         <div class="onboarding-actions">
           <button id="btn-onboarding-continue" class="btn-primary-sm" type="button" ${canContinue ? '' : 'disabled'}>Devam Et</button>
@@ -95,7 +112,7 @@ export async function renderOnboardingView(container: HTMLElement, options: Onbo
     const btnAdd = container.querySelector('#btn-onboarding-add-folder') as HTMLButtonElement | null;
     if (btnAdd) {
       btnAdd.onclick = async () => {
-        const selected = await window.api.selectFolder();
+        const selected = await window.api.selectFolder('include');
         if (selected && !folders.includes(selected)) {
           folders.push(selected);
           render('#btn-onboarding-add-folder');
@@ -116,6 +133,16 @@ export async function renderOnboardingView(container: HTMLElement, options: Onbo
         startAtLogin = chkStart.checked;
       };
     }
+
+    const btnShortcut = container.querySelector('#btn-onboarding-shortcut') as HTMLButtonElement;
+    btnShortcut.onclick = () => {
+      recordShortcut(btnShortcut, async message => {
+        shortcut = await window.api.getQuickSearchShortcut();
+        shortcutStatus = message ?? '';
+        render('#btn-onboarding-shortcut');
+        if (message) announce(message);
+      });
+    };
 
     const btnContinue = container.querySelector('#btn-onboarding-continue') as HTMLButtonElement;
     btnContinue.onclick = async () => {

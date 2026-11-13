@@ -1,10 +1,10 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { AppDatabase, DocumentRecord, OcrState } from '../db/database.js';
-import { ScannedFile, scanDirectories, isPathOrSubpath, isPathExcluded, listedDirectoryKey, resolveExclusions, ScanStats } from '../scanner/scanner.js';
+import { AppDatabase, DocumentRecord, DocumentState, OcrState } from '../db/database.js';
+import { ScannedFile, scanDirectories, filterLocallyAvailableFiles, isPathOrSubpath, isPathExcluded, listedDirectoryKey, resolveExclusions, ScanStats } from '../scanner/scanner.js';
 import { ContentNotLocallyAvailableError } from '../scanner/windows-availability.js';
 import { extract, extractPdfPageTexts } from '../extractors/index.js';
-import { discoverSearchRoots } from '../scanner/roots.js';
+import { discoverSearchScope } from '../scanner/roots.js';
 import { OcrEngine, ocrTimeoutMs } from '../ocr/ocr.js';
 
 export interface IndexProgress {
@@ -35,6 +35,9 @@ export interface IndexSummary {
   // ones left for a later update once its time budget ran out.
   ocrRecognized: number;
   ocrPending: number;
+  // Windows: files to read whose attributes could not be checked (see
+  // ScanStats.unverifiedPaths). Left for the next update.
+  unverified: number;
 }
 
 export interface IndexOptions {
@@ -51,6 +54,9 @@ export interface IndexOptions {
   // (a malformed or hostile file can send a parser into an endless loop) and
   // records that document as unreadable, so the next update gets past it.
   onReading?: (file: ScannedFile, limitMs: number) => void;
+  // Asked between documents: true ends the update there (the settings it
+  // started with have changed; the main process starts a new one).
+  shouldStop?: () => boolean;
 }
 
 // How long reading one document's text layer may take: five minutes, plus a
@@ -145,7 +151,8 @@ export async function indexFolders(
     skippedDataless: 0,
     keptCloudOnly: 0,
     ocrRecognized: 0,
-    ocrPending: 0
+    ocrPending: 0,
+    unverified: 0
   };
 
   if (folders.length === 0) {
@@ -162,9 +169,10 @@ export async function indexFolders(
     listedDirectories: new Map(),
     cloudOnlyDirectories: new Set(),
     unansweredDirectories: new Set(),
-    refusedPaths: new Set()
+    refusedPaths: new Set(),
+    unverifiedPaths: new Set()
   };
-  const scannedFiles = await scanDirectories(folders, excludedPaths, explicitIncludes, scanStats);
+  const scannedFiles = await scanDirectories(folders, excludedPaths, explicitIncludes, scanStats, { deferWindowsAvailability: true });
   summary.scanned = scannedFiles.length;
   const cloudOnlyPaths = scanStats.skippedDatalessPaths ?? new Set<string>();
   const listedDirectories = scanStats.listedDirectories ?? new Map<string, number>();
@@ -234,8 +242,6 @@ export async function indexFolders(
     appDb.compactSearchIndex();
     appDb.truncateWriteAheadLog();
   }
-  summary.skippedDataless = Math.max(0, scanStats.skippedDatalessSupportedCount - keptCloudOnlyFiles);
-
   // 3. Process each scanned file (incremental)
   const ocr = options.ocr;
   let ocrSpentMs = 0;
@@ -292,8 +298,50 @@ export async function indexFolders(
     }
   }
 
+  // Incremental check: mtime + size unchanged. A file that could not be read
+  // is tried again unless the caller said not to (automatic updates). A PDF
+  // is not settled until its pages have been checked (older indexes), nor
+  // while text recognition still has work on it and is available.
+  interface Decision {
+    existing: DocumentState | undefined;
+    unchanged: boolean;
+    awaitsOcr: boolean;
+    settled: boolean;
+  }
+  const decide = (file: ScannedFile): Decision => {
+    const existing = appDb.getDocumentState(file.path);
+    const isPdf = file.extension === '.pdf';
+    const unchanged = existing !== undefined && existing.mtime === file.mtime && existing.size === file.size;
+    const awaitsOcr = isPdf && ocr !== undefined
+      && (existing?.ocr === 'pending' || (existing?.ocr === 'failed' && options.retryFailed !== false));
+    const uncheckedPdf = isPdf && existing !== undefined && existing.ocr == null && existing.index_status !== 'failed';
+    const settled = !awaitsOcr && !uncheckedPdf && (
+      existing?.index_status === 'indexed' || existing?.index_status === 'no_text'
+      || (existing?.index_status === 'failed' && options.retryFailed === false));
+    return { existing, unchanged, awaitsOcr, settled };
+  };
+  const decisions = new Map<string, Decision>();
+  for (const file of scannedFiles) decisions.set(file.path, decide(file));
+
+  // Windows: whether a file's content is on this computer is checked only
+  // for the files this update will read -- new, changed or unsettled ones.
+  // An unchanged, indexed document is not read, so where its content lives
+  // does not matter; checking it anyway cost every update a PowerShell per
+  // 1,000 documents (5 s for 3,000 unchanged ones in the review).
+  let readable: Set<string> | null = null;
+  if (process.platform === 'win32') {
+    const toRead = scannedFiles.filter(file => {
+      const decision = decisions.get(file.path)!;
+      return !(decision.unchanged && decision.settled);
+    });
+    readable = new Set((await filterLocallyAvailableFiles(toRead, scanStats)).map(file => file.path));
+  }
+  summary.skippedDataless = Math.max(0, scanStats.skippedDatalessSupportedCount - keptCloudOnlyFiles);
+  const unverifiedPaths = scanStats.unverifiedPaths ?? new Set<string>();
+
   let currentIdx = 0;
   for (const file of scannedFiles) {
+    if (options.shouldStop?.()) return summary;
     currentIdx++;
     onProgress?.({
       total: scannedFiles.length,
@@ -302,22 +350,17 @@ export async function indexFolders(
       status: 'indexing'
     });
 
-    const existing = appDb.getDocumentByPath(file.path);
+    const { existing, unchanged, awaitsOcr, settled } = decisions.get(file.path)!;
     const isPdf = file.extension === '.pdf';
-
-    // Incremental check: mtime + size unchanged. A file that could not be read
-    // is tried again unless the caller said not to (automatic updates). A PDF
-    // is not settled until its pages have been checked (older indexes), nor
-    // while text recognition still has work on it and is available.
-    const unchanged = existing && existing.mtime === file.mtime && existing.size === file.size;
-    const awaitsOcr = isPdf && ocr !== undefined
-      && (existing?.ocr === 'pending' || (existing?.ocr === 'failed' && options.retryFailed !== false));
-    const uncheckedPdf = isPdf && existing !== undefined && existing.ocr == null && existing.index_status !== 'failed';
-    const settled = !awaitsOcr && !uncheckedPdf && (
-      existing?.index_status === 'indexed' || existing?.index_status === 'no_text'
-      || (existing?.index_status === 'failed' && options.retryFailed === false));
     if (unchanged && settled) {
       summary.skipped++;
+      continue;
+    }
+
+    // Not on this computer (counted above), or not known to be: its entry,
+    // if any, stays as it is.
+    if (readable && !readable.has(file.path)) {
+      if (unverifiedPaths.has(file.path)) summary.unverified++;
       continue;
     }
 
@@ -405,6 +448,39 @@ export async function indexFolders(
   return summary;
 }
 
+// Whether a path is on a disk that is not connected right now: a USB or
+// network disk on macOS (/Volumes/...), a drive letter or a network share on
+// Windows. Its documents stay in the index until it comes back, as a
+// disconnected disk's do inside the search areas.
+export function isOnAbsentVolume(docPath: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'win32') {
+    if (/^[\\/]{2}/.test(docPath)) return true;
+    const drive = docPath.match(/^([A-Za-z]:)[\\/]/);
+    return drive !== null && !fs.existsSync(`${drive[1]}\\`);
+  }
+  const volume = docPath.match(/^\/Volumes\/[^/]+/);
+  return volume !== null && !fs.existsSync(volume[0]);
+}
+
+/**
+ * Removes the documents that lie outside every folder MetinBul now searches:
+ * a search area the user removed, a switch from "Bilgisayarın Tümü" to
+ * certain folders, or the other way round. Their text used to stay in the
+ * index file indefinitely (hidden from results only). Documents on a disk
+ * that is not connected are kept. Returns how many went.
+ */
+export function removeOutOfScopeDocuments(appDb: AppDatabase, scopeFolders: string[]): number {
+  const outside = appDb.getAllDocumentPaths()
+    .map(doc => doc.path)
+    .filter(docPath => !scopeFolders.some(folder => isPathOrSubpath(folder, docPath)) && !isOnAbsentVolume(docPath));
+  if (outside.length > 0) {
+    appDb.deleteDocuments(outside);
+    appDb.compactSearchIndex();
+    appDb.truncateWriteAheadLog();
+  }
+  return outside.length;
+}
+
 export async function indexAccessibleDocuments(
   appDb: AppDatabase,
   onProgress?: (progress: IndexProgress) => void,
@@ -415,13 +491,20 @@ export async function indexAccessibleDocuments(
   const userIncludes = appDb.getIncludedFolders();
 
   if (mode === 'selected') {
+    // No folder at all: everything indexed so far is out of scope.
+    const removed = removeOutOfScopeDocuments(appDb, userIncludes);
     if (userIncludes.length === 0) {
       onProgress?.({ total: 0, current: 0, status: 'completed' });
-      return { scanned: 0, indexed: 0, skipped: 0, failed: 0, removed: 0, skippedDataless: 0, keptCloudOnly: 0, ocrRecognized: 0, ocrPending: 0 };
+      return { scanned: 0, indexed: 0, skipped: 0, failed: 0, removed, skippedDataless: 0, keptCloudOnly: 0, ocrRecognized: 0, ocrPending: 0, unverified: 0 };
     }
-    return await indexFolders(userIncludes, appDb, onProgress, excludedPaths, userIncludes, options);
+    const summary = await indexFolders(userIncludes, appDb, onProgress, excludedPaths, userIncludes, options);
+    return { ...summary, removed: summary.removed + removed };
   } else {
-    const defaultRoots = await discoverSearchRoots();
-    return await indexFolders(defaultRoots, appDb, onProgress, excludedPaths, userIncludes, options);
+    const { roots, complete } = await discoverSearchScope();
+    // An incomplete list of disks (Windows did not answer) proves nothing
+    // about the documents on the disks it left out.
+    const removed = complete ? removeOutOfScopeDocuments(appDb, roots) : 0;
+    const summary = await indexFolders(roots, appDb, onProgress, excludedPaths, userIncludes, options);
+    return { ...summary, removed: summary.removed + removed };
   }
 }

@@ -150,6 +150,8 @@ export async function renderIndexView(container: HTMLElement, options: IndexView
         </div>
       </div>
       <p class="settings-note" id="ocr-turkish-note">Taranmış PDF'lerin okunabilmesi için Windows'un Türkçe metin tanıma bileşeni gerekiyor. Yüklemek için internet bağlantısı ve yönetici izni gerekir.</p>` : ''}
+      ${status.ocrRestricted ? `
+      <p class="settings-warning" role="note">Bu bilgisayarın güvenlik ayarları (PowerShell’in kısıtlı dil kipi) Windows’un metin tanımasını engelliyor: taranmış PDF’lerin yalnızca metin katmanı aranabilir. Bilgisayarı yöneten kişiye danışabilirsiniz.</p>` : ''}
       ${status.lastSearchError ? `
       <p class="settings-warning" role="note">
         Son arama hatası (${escapeHtml(formatIndexTimestamp(status.lastSearchError.at))}):
@@ -158,6 +160,20 @@ export async function renderIndexView(container: HTMLElement, options: IndexView
     </section>
 
     ${issuesHtml(status)}
+
+    <section class="settings-group" aria-labelledby="index-file-title">
+      <h2 class="settings-group-title" id="index-file-title">Arama Dizini</h2>
+      ${status.indexEncrypted
+        ? '<p class="settings-note">Arama dizini şifreli: yalnızca bu bilgisayardaki kullanıcı hesabınızla açılabilir.</p>'
+        : `<p class="settings-warning" role="note">${escapeHtml(status.indexEncryptionProblem || 'Arama dizini şifrelenmemiş.')}</p>`}
+      <div class="settings-card">
+        <div class="settings-row">
+          <span class="settings-row-label">Dizini sil ve yeniden oluştur</span>
+          <button id="btn-index-rebuild" class="btn-secondary-sm" type="button" aria-describedby="index-rebuild-note">Yeniden Oluştur…</button>
+        </div>
+      </div>
+      <p class="settings-note" id="index-rebuild-note">Arama dizinindeki bütün metinler silinir ve belgeler baştan okunur. Belgelerinize ve ayarlarınıza dokunulmaz.</p>
+    </section>
   `;
 
   if (focusedId) (container.querySelector(`#${focusedId}`) as HTMLElement | null)?.focus();
@@ -209,6 +225,14 @@ export async function renderIndexView(container: HTMLElement, options: IndexView
     btnUpdate.textContent = 'Güncelleniyor…';
     announceAlways('Belgeler güncelleniyor.');
     await window.api.rescan();
+  };
+
+  const btnRebuild = container.querySelector('#btn-index-rebuild') as HTMLButtonElement;
+  btnRebuild.onclick = async () => {
+    // The main process asks for confirmation in a dialog of its own.
+    if (await window.api.rebuildIndex()) {
+      announceAlways('Arama dizini silindi; belgeler baştan okunuyor.');
+    }
   };
 
   const details = container.querySelector('#unreadable-details') as HTMLDetailsElement | null;

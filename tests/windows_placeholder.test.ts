@@ -34,12 +34,15 @@ vi.mock('../src/extractors/pdf.js', () => ({
 // Stand-in for the OS metadata reader. Keyed by absolute path; a path that is
 // absent models "attributes could not be read".
 const fakeAttributes = new Map<string, number>();
+// Every path the attribute reader was asked about, in order.
+const attributeReads: string[] = [];
 
 vi.mock('../src/scanner/windows-availability.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/scanner/windows-availability.js')>();
   return {
     ...actual,
     readWindowsFileAttributes: async (filePaths: string[]) => {
+      attributeReads.push(...filePaths);
       const result = new Map<string, number>();
       for (const filePath of filePaths) {
         const attributes = fakeAttributes.get(filePath);
@@ -244,11 +247,16 @@ describe('Windows cloud placeholder guard -- scanner boundary', () => {
       // files[3] deliberately absent -> attributes unreadable -> fail closed
     ]);
 
-    const scanStats = { skippedDatalessSupportedCount: 0 };
+    const scanStats = { skippedDatalessSupportedCount: 0, unverifiedPaths: new Set<string>() };
     const kept = await filterLocallyAvailableFiles(files, scanStats, async () => attributes);
 
     expect(kept.map(f => f.path)).toEqual([files[0].path, files[1].path]);
-    expect(scanStats.skippedDatalessSupportedCount).toBe(2);
+    // Only the placeholder counts as cloud-only. The file whose attributes
+    // could not be read is not read either, but it is reported as unchecked:
+    // a reader that timed out says nothing about where a file is (the review
+    // of 0.4.3 saw a timeout report a whole update's documents as "in the cloud").
+    expect(scanStats.skippedDatalessSupportedCount).toBe(1);
+    expect([...scanStats.unverifiedPaths]).toEqual([files[3].path]);
   });
 
   it('reads attributes in bulk, not once per file', async () => {
@@ -359,11 +367,35 @@ describe('Windows cloud placeholder guard -- indexing pipeline', () => {
     // file being opened again. Only the two never-indexed placeholders count
     // as not searchable. (Until v0.3.0 the entry was dropped here, identically
     // on macOS, which silently emptied the index as iCloud offloaded files.)
+    // An unchanged, indexed document is no longer even checked: it is
+    // not read, so where its content lives does not matter, and checking every
+    // document cost every automatic update a PowerShell per 1,000 of them.
     expect(rescan.removed).toBe(0);
-    expect(rescan.keptCloudOnly).toBe(1);
+    expect(rescan.keptCloudOnly).toBe(0);
     expect(rescan.skippedDataless).toBe(2);
     expect(db.getDocumentByPath(hydratedPdf)?.content).toBe('yerel pdf içeriği dilekçe');
     expect(search('dilekçe', db).map(r => r.path)).toContain(hydratedPdf);
+  });
+
+  it('checks only the files it will read: none at all when nothing changed', async () => {
+    await indexFolders(db.getFolders(), db);
+    attributeReads.length = 0;
+    extractorCalls.length = 0;
+
+    const rescan = await indexFolders(db.getFolders(), db);
+
+    // The two indexed documents are unchanged: not read, not checked. The two
+    // placeholders were never indexed, so they are looked at again.
+    expect(extractorCalls).toHaveLength(0);
+    expect(attributeReads.sort()).toEqual([onlineOnlyDocx, onlineOnlyPdf].sort());
+    expect(rescan.skipped).toBe(2);
+
+    // A changed document is checked (and read) again.
+    fs.appendFileSync(localDocx, Buffer.alloc(16));
+    attributeReads.length = 0;
+    await indexFolders(db.getFolders(), db);
+    expect(attributeReads).toContain(localDocx);
+    expect(attributeReads).not.toContain(hydratedPdf);
   });
 
   it('indexes a placeholder once the user makes it locally available', async () => {

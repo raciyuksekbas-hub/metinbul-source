@@ -5,9 +5,16 @@
 
 // Explicitly NOT Cmd+M (macOS system Minimize) and NOT Alt+Space on Windows
 // (system window menu) -- per the real user feedback this feature is a
-// response to.
+// response to. Nor Ctrl+Shift+M on Windows, the default until 0.4.4: a
+// colleague's review of 0.4.3 found it taking over Outlook's new message,
+// Teams' microphone mute, Word's outdent and Chrome's profile menu
+// everywhere, all day -- a lawyer could not mute themselves in a Teams
+// hearing. Ctrl+Alt+Space is not a shortcut of Office, Teams, Chrome, Edge
+// or Windows that we know of, and AltGr+Space (AltGr is Ctrl+Alt on Windows)
+// is not a character of the Turkish Q and F layouts. To be tried on a real
+// office Windows before release. Users who picked a shortcut keep it.
 export function getDefaultAccelerator(platform: NodeJS.Platform): string {
-  return platform === 'darwin' ? 'Alt+Space' : 'Ctrl+Shift+M';
+  return platform === 'darwin' ? 'Alt+Space' : 'Ctrl+Alt+Space';
 }
 
 const MODIFIER_TOKENS = new Set([
@@ -63,11 +70,60 @@ function isKeyToken(token: string): boolean {
   return false;
 }
 
-// Requires at least one modifier plus exactly one trailing key token --
-// deliberately stricter than every string Electron's accelerator parser
-// would accept, since a global shortcut with no modifier (e.g. a bare
-// letter) would hijack that key everywhere on the system.
-export function isValidAccelerator(accelerator: string): boolean {
+// The modifier a shortcut must have besides Shift: Shift and a key is just
+// typing (Shift+K is a capital K) or another program's own shortcut.
+type Modifier = 'ctrl' | 'alt' | 'shift' | 'meta';
+
+function canonicalModifier(token: string, platform: NodeJS.Platform): Modifier | null {
+  switch (token.toLowerCase()) {
+    case 'ctrl': case 'control': return 'ctrl';
+    case 'alt': case 'option': case 'altgr': return 'alt';
+    case 'shift': return 'shift';
+    case 'cmd': case 'command': case 'super': case 'meta': return 'meta';
+    case 'cmdorctrl': case 'commandorcontrol': return platform === 'darwin' ? 'meta' : 'ctrl';
+    default: return null;
+  }
+}
+
+// What everyone presses every day, and what the system keeps for itself.
+// Written as sorted modifiers and the key, lowercase.
+const EVERYDAY_LETTERS = ['a', 'c', 'f', 'n', 'o', 'p', 'q', 's', 't', 'v', 'w', 'x', 'y', 'z'];
+const RESERVED: Record<'darwin' | 'other', Set<string>> = {
+  darwin: new Set([
+    ...EVERYDAY_LETTERS.map(k => `meta+${k}`), 'meta+h', 'meta+m', 'meta+tab', 'meta+space',
+    'ctrl+space', 'ctrl+meta+space', 'alt+meta+escape', 'ctrl+meta+q', 'meta+shift+3', 'meta+shift+4', 'meta+shift+5'
+  ]),
+  other: new Set([
+    ...EVERYDAY_LETTERS.map(k => `ctrl+${k}`), 'ctrl+h', 'ctrl+r', 'ctrl+tab', 'ctrl+escape',
+    'ctrl+shift+escape', 'alt+ctrl+delete', 'alt+f4', 'alt+tab', 'alt+escape', 'alt+space', 'ctrl+space'
+  ])
+};
+
+/**
+ * True for a shortcut MetinBul must not take away from everything else:
+ * Ctrl+C/V/X/Z/S…, Alt+F4, Alt+Tab, the system's own; on Windows also any
+ * Windows-key shortcut without Ctrl or Alt (Windows keeps nearly all of them).
+ */
+export function isReservedAccelerator(accelerator: string, platform: NodeJS.Platform = process.platform): boolean {
+  const parts = accelerator.split('+').map(p => p.trim()).filter(Boolean);
+  if (parts.length < 2) return false;
+  const key = parts[parts.length - 1].toLowerCase();
+  const modifiers = [...new Set(parts.slice(0, -1).map(m => canonicalModifier(m, platform)))].sort();
+  if (modifiers.includes(null)) return false;
+  if (platform !== 'darwin' && modifiers.includes('meta') && !modifiers.includes('ctrl') && !modifiers.includes('alt')) return true;
+  return RESERVED[platform === 'darwin' ? 'darwin' : 'other'].has([...modifiers, key].join('+'));
+}
+
+export const RESERVED_SHORTCUT_MESSAGE =
+  'Bu kısayolu sistem ya da sık kullanılan programlar kullanıyor; MetinBul onu her yerde ele geçirirdi. '
+  + 'Ctrl veya Alt içeren başka bir kombinasyon seçin.';
+
+// Requires at least one modifier other than Shift plus exactly one trailing
+// key token -- deliberately stricter than every string Electron's
+// accelerator parser would accept, since a global shortcut with no modifier
+// (e.g. a bare letter) would hijack that key everywhere on the system -- and
+// none of the shortcuts everyone relies on (isReservedAccelerator).
+export function isValidAccelerator(accelerator: string, platform: NodeJS.Platform = process.platform): boolean {
   if (!accelerator || typeof accelerator !== 'string') return false;
   const parts = accelerator.split('+').map(p => p.trim()).filter(Boolean);
   if (parts.length < 2) return false;
@@ -78,7 +134,9 @@ export function isValidAccelerator(accelerator: string): boolean {
   if (!isKeyToken(key)) return false;
   if (modifiers.length === 0) return false;
   if (conflictsWithScreenReader(accelerator)) return false;
-  return modifiers.every(m => MODIFIER_TOKENS.has(m.toLowerCase()));
+  if (!modifiers.every(m => MODIFIER_TOKENS.has(m.toLowerCase()))) return false;
+  if (!modifiers.some(m => canonicalModifier(m, platform) !== 'shift')) return false;
+  return !isReservedAccelerator(accelerator, platform);
 }
 
 const MAC_SYMBOLS: Record<string, string> = {

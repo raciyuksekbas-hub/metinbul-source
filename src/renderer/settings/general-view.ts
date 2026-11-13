@@ -8,28 +8,13 @@ import {
   type A11yPrefs, type TextScale, type TriState
 } from '../a11y-prefs.js';
 import type { AppTheme } from '../window-api.js';
+import { recordShortcut } from './shortcut-recorder.js';
+
+export { keyEventToAcceleratorToken } from './shortcut-recorder.js';
 
 export interface GeneralViewOptions {
   /** The "linear results" preference only affects the Windows main window. */
   showLinearResultsOption: boolean;
-}
-
-// Maps a browser KeyboardEvent to an Electron accelerator key token. Returns
-// null while only modifier keys are held (waiting for the actual key).
-export function keyEventToAcceleratorToken(e: KeyboardEvent): string | null {
-  const key = e.key;
-  if (['Control', 'Meta', 'Alt', 'Shift'].includes(key)) return null;
-  if (key === ' ') return 'Space';
-  const named: Record<string, string> = {
-    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
-    Escape: 'Escape', Enter: 'Return', Backspace: 'Backspace', Delete: 'Delete',
-    Tab: 'Tab', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown'
-  };
-  if (named[key]) return named[key];
-  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(key)) return key;
-  if (/^[0-9]$/.test(key)) return key;
-  if (/^[a-zA-Z]$/.test(key)) return key.toUpperCase();
-  return null;
 }
 
 let captureCleanup: (() => void) | null = null;
@@ -106,6 +91,20 @@ export async function renderGeneralView(container: HTMLElement, options: General
 
   container.innerHTML = `
     ${startupGroup}
+
+    <section class="settings-group" aria-labelledby="general-privacy-title">
+      <h2 class="settings-group-title" id="general-privacy-title">Gizlilik</h2>
+      <div class="settings-card">
+        <div class="settings-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-content-protection" aria-describedby="content-protection-note" ${startup.contentProtection ? 'checked' : ''}>
+            <span>Ekran paylaşımında ve kayıtlarda MetinBul’u gizle</span>
+          </label>
+        </div>
+      </div>
+      <p class="settings-note" id="content-protection-note">Açıkken MetinBul pencereleri ekran paylaşımında (Teams, Zoom), ekran kaydında, ekran görüntüsünde${/Windows/i.test(navigator.userAgent) ? ' ve Windows Recall’da' : ''} görünmez; arama sonuçlarındaki belge satırları paylaşılmaz.</p>
+      <p id="privacy-status" class="settings-status" hidden></p>
+    </section>
 
     <section class="settings-group" aria-labelledby="general-shortcut-title">
       <h2 class="settings-group-title" id="general-shortcut-title">Hızlı Arama</h2>
@@ -223,61 +222,25 @@ export async function renderGeneralView(container: HTMLElement, options: General
     };
   }
 
+  const chkProtection = container.querySelector('#chk-content-protection') as HTMLInputElement;
+  chkProtection.onchange = async () => {
+    const wanted = chkProtection.checked;
+    chkProtection.disabled = true;
+    const result = await window.api.setContentProtection(wanted);
+    await rerender('#chk-content-protection');
+    reportStatus('privacy-status', result.success
+      ? (wanted ? 'MetinBul ekran paylaşımında ve kayıtlarda görünmeyecek.' : 'MetinBul ekran paylaşımında görünecek.')
+      : (result.error || 'Ayar değiştirilemedi.'));
+  };
+
   // --- Shortcut ---------------------------------------------------------------
   const btnRecord = container.querySelector('#btn-shortcut-record') as HTMLButtonElement;
   btnRecord.onclick = () => {
-    btnRecord.textContent = 'Bir tuş kombinasyonuna basın… (Esc ile iptal)';
-    btnRecord.disabled = true;
-    // Key capture is global while recording, so the state is announced --
-    // otherwise Tab appears to stop working with no reason given.
-    announceAlways('Kısayol kaydediliyor. Bir tuş kombinasyonuna basın. İptal etmek için Escape tuşuna basın.');
-
-    const captureHandler = async (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        cleanup();
-        await rerender('#btn-shortcut-record');
-        announceAlways('Kısayol değiştirme iptal edildi.');
-        return;
-      }
-
-      const keyToken = keyEventToAcceleratorToken(e);
-      if (!keyToken) return; // still only modifiers held down
-
-      const modifiers: string[] = [];
-      if (e.ctrlKey) modifiers.push('Control');
-      if (e.metaKey) modifiers.push('Command');
-      if (e.altKey) modifiers.push('Alt');
-      if (e.shiftKey) modifiers.push('Shift');
-
-      cleanup();
-
-      if (modifiers.length === 0) {
-        await rerender('#btn-shortcut-record');
-        reportStatus('shortcut-status', 'En az bir değiştirici tuş (Ctrl/Cmd/Alt/Shift) gerekli.');
-        return;
-      }
-
-      const accelerator = [...modifiers, keyToken].join('+');
-      const result = await window.api.setQuickSearchShortcut(accelerator);
-      await rerender('#btn-shortcut-record');
-      if (result.success) {
-        const current = await window.api.getQuickSearchShortcut();
-        reportStatus('shortcut-status', `Hızlı Arama kısayolu: ${current.display || accelerator}.`);
-      } else {
-        reportStatus('shortcut-status', result.error || 'Kısayol ayarlanamadı.');
-      }
-    };
-
-    function cleanup() {
-      window.removeEventListener('keydown', captureHandler, true);
+    captureCleanup = recordShortcut(btnRecord, async message => {
       captureCleanup = null;
-    }
-
-    captureCleanup = cleanup;
-    window.addEventListener('keydown', captureHandler, true);
+      await rerender('#btn-shortcut-record');
+      if (message) reportStatus('shortcut-status', message);
+    });
   };
 
   // --- Theme -------------------------------------------------------------------

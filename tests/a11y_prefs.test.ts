@@ -126,7 +126,9 @@ describe('A11Y-L — shortcuts do not hijack screen reader modifiers (spec §8)'
     for (const platform of ['darwin', 'win32', 'linux'] as NodeJS.Platform[]) {
       const accelerator = getDefaultAccelerator(platform);
       expect(conflictsWithScreenReader(accelerator)).toBe(false);
-      expect(isValidAccelerator(accelerator)).toBe(true);
+      // Judged by that platform's rules: Alt+Space is macOS's default and
+      // Windows' window menu.
+      expect(isValidAccelerator(accelerator, platform), `${platform}: ${accelerator}`).toBe(true);
     }
   });
 });

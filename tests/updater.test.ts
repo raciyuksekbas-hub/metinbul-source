@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   compareVersions,
   checkForUpdates,
@@ -107,5 +109,25 @@ describe('GitHub Release Update Checker', () => {
       expect(result.status).toBe('unreachable');
       expect(result.message).toContain('bağlanılamadı');
     });
+  });
+});
+
+describe('an update check that gets no answer', () => {
+  it('gives up after its deadline instead of waiting for good', async () => {
+    const hanging = ((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })) as unknown as typeof fetch;
+    const started = Date.now();
+    const result = await checkForUpdates('0.1.0', { fetchFn: hanging, timeoutMs: 50 });
+    expect(result.status).toBe('unreachable');
+    expect(result.updateAvailable).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('the app sends it through Chromium\'s network stack, which honours the system proxy', () => {
+    const main = fs.readFileSync(path.join(__dirname, '../src/main/main.ts'), 'utf8');
+    expect(main).toMatch(/const updateFetch = \(\(input: string, init\?: RequestInit\) => net\.fetch\(input, init\)\)/);
+    expect((main.match(/checkForUpdates\(.*\{ fetchFn: updateFetch \}\)/g) || []).length).toBe(2);
+    expect((main.match(/checkForUpdates\(/g) || []).length).toBe(2);
   });
 });

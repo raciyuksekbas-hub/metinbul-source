@@ -14,6 +14,7 @@ import { makePrivateTempDir, removePrivateTempDir, removeStalePrivateTempFiles }
 import { AppDatabase } from '../../src/db/database.js';
 import { DOCUMENT_READ_LIMIT_MS, documentReadLimitMs, indexFolders } from '../../src/search/indexer.js';
 import { ocrTimeoutMs } from '../../src/ocr/ocr.js';
+import { effectiveIndexingMemoryLimitBytes, indexingMemoryLimitBytes } from '../../src/main/index-memory.js';
 import { setupFixtures, FIXTURES_DIR } from '../fixtures/create_fixtures.js';
 
 const isWindows = process.platform === 'win32';
@@ -124,6 +125,17 @@ describe('the indexing watchdog', () => {
     db.close();
   });
 
+  it('a document may take MetinBul to 40% of the memory, between 1.5 and 3 GiB', () => {
+    const GiB = 1024 ** 3;
+    expect(indexingMemoryLimitBytes(2 * GiB)).toBe(1.5 * GiB);
+    expect(indexingMemoryLimitBytes(6 * GiB)).toBeCloseTo(2.4 * GiB);
+    expect(indexingMemoryLimitBytes(16 * GiB)).toBe(3 * GiB);
+    // A smoke test may lower it, never raise it.
+    expect(effectiveIndexingMemoryLimitBytes(16 * GiB, { METINBUL_TEST_INDEX_MEMORY_LIMIT_MB: '512' })).toBe(512 * 1024 ** 2);
+    expect(effectiveIndexingMemoryLimitBytes(16 * GiB, { METINBUL_TEST_INDEX_MEMORY_LIMIT_MB: '99999' })).toBe(3 * GiB);
+    expect(effectiveIndexingMemoryLimitBytes(16 * GiB, { METINBUL_TEST_INDEX_MEMORY_LIMIT_MB: 'yok' })).toBe(3 * GiB);
+  });
+
   it('main.ts stops an overrunning or crashed update and records that document as unreadable', () => {
     const main = fs.readFileSync(path.join(ROOT, 'src/main/main.ts'), 'utf8').replace(/\r\n/g, '\n');
     expect(main).toMatch(/msg\.type === 'reading'[\s\S]{0,300}setTimeout\(\(\) => \{[\s\S]{0,400}worker\.terminate\(\)[\s\S]{0,50}msg\.limitMs\)/);
@@ -131,12 +143,16 @@ describe('the indexing watchdog', () => {
     // A worker that simply ends mid-document (a promise that never settles).
     expect(main).toMatch(/msg\.type === 'done' \|\| msg\.type === 'error'\) finished = true/);
     expect(main).toMatch(/worker\.on\('exit'[\s\S]{0,400}if \(!finished && reading && !stuckOn && !isQuitting\) stuckOn = reading/);
-    expect(main).toMatch(/worker\.on\('exit'[\s\S]{0,1000}markDocumentUnreadable\(quarantined\)[\s\S]{0,400}triggerIndexing\(trigger, \{ retryFailed: false \}\)/);
+    expect(main).toMatch(/worker\.on\('exit'[\s\S]{0,1000}markDocumentUnreadable\(quarantined\)[\s\S]{0,1000}triggerIndexing\(trigger, \{ retryFailed: false \}\)/);
     // A document whose reading ended is forgotten at the next progress
     // message, so a later error is never pinned on it.
     expect(main).toMatch(/msg\.type === 'progress'\) \{\s*\/\/[^\n]*\n\s*reading = null;\s*disarm\(\);/);
     // A limit Electron's shared V8 heap cage can actually reach.
     expect(main).toMatch(/resourceLimits: \{ maxOldGenerationSizeMb: 2048 \}/);
+    // Memory outside that heap (a PDF's decompressed streams) is watched while
+    // a document is read, and stops the update the same way.
+    expect(main).toMatch(/memoryWatch = setInterval\(\(\) => \{\s*if \(process\.memoryUsage\(\)\.rss <= memoryLimit\) return;\s*stuckOn = reading;[\s\S]{0,300}worker\.terminate\(\)/);
+    expect(main).toMatch(/const disarm = \(\) => \{[\s\S]{0,200}clearInterval\(memoryWatch\)/);
     const worker = fs.readFileSync(path.join(ROOT, 'src/main/indexer-worker.ts'), 'utf8').replace(/\r\n/g, '\n');
     expect(worker).toMatch(/onReading: \(file, limitMs\) =>[\s\S]{0,200}type: 'reading'/);
   });

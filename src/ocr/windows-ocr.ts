@@ -15,17 +15,21 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { makePrivateTempDir, removePrivateTempDir } from '../shared/private-temp.js';
+import { windowsPowerShellPath } from '../shared/powershell.js';
 import { assertContentLocallyAvailable, ContentNotLocallyAvailableError } from '../scanner/windows-availability.js';
 import {
   OcrEngine, OCR_EXIT_CLOUD_ONLY, OCR_EXIT_NO_TURKISH, OCR_EXIT_UNREADABLE, ocrTimeoutMs, splitOcrPages
 } from './ocr.js';
 
 // 'unavailable': no Windows.Media.Ocr (or no Windows PowerShell) at all.
-export type WindowsOcrStatus = 'ready' | 'no-turkish' | 'unavailable';
+// 'restricted': PowerShell runs in Constrained Language Mode (a company's
+// AppLocker / WDAC policy), which does not allow what text recognition needs.
+export type WindowsOcrStatus = 'ready' | 'no-turkish' | 'unavailable' | 'restricted';
 
 export const WINDOWS_TURKISH_OCR_CAPABILITY = 'Language.OCR~~~tr-TR~0.0.1.0';
 
 const EXIT_NO_WINRT_OCR = 4;
+const EXIT_RESTRICTED_LANGUAGE = 5;
 
 function psLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -34,6 +38,7 @@ function psLiteral(value: string): string {
 export function buildWindowsOcrScript(jobPath?: string): string {
   const lines = [
     "$ErrorActionPreference = 'Stop'",
+    `if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { exit ${EXIT_RESTRICTED_LANGUAGE} }`,
     'try {',
     '  Add-Type -AssemblyName System.Runtime.WindowsRuntime',
     '  [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime] | Out-Null',
@@ -78,6 +83,10 @@ export function buildWindowsOcrScript(jobPath?: string): string {
     '    $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])',
     '    $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])',
     '    $text = ($result.Lines | ForEach-Object { $_.Text }) -join "`n"',
+    // Each page's bitmap (some 30 MB at 300 dpi), stream and page released
+    // as soon as it is read, not when PowerShell ends: a long scan held them
+    // all (a review of 0.4.3).
+    '    try { $bitmap.Dispose(); $stream.Dispose(); $page.Dispose() } catch { }',
     '  }',
     '  [void]$out.Append($text).Append([char]12)',
     '}',
@@ -91,7 +100,7 @@ function runPowerShell(script: string, timeoutMs: number): Promise<{ code: numbe
     let child;
     try {
       child = spawn(
-        'powershell.exe',
+        windowsPowerShellPath(),
         [
           '-NoProfile', '-NonInteractive', '-NoLogo', '-ExecutionPolicy', 'Bypass',
           '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')
@@ -150,6 +159,7 @@ export async function checkWindowsOcr(): Promise<WindowsOcrStatus> {
   const { code } = await runPowerShell(buildWindowsOcrScript(), 60_000);
   if (code === 0) return 'ready';
   if (code === OCR_EXIT_NO_TURKISH) return 'no-turkish';
+  if (code === EXIT_RESTRICTED_LANGUAGE) return 'restricted';
   return 'unavailable';
 }
 
@@ -160,7 +170,7 @@ export async function installWindowsTurkishOcr(): Promise<boolean> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     'try {',
-    "  $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden " +
+    `  $p = Start-Process -FilePath ${psLiteral(windowsPowerShellPath())} -Verb RunAs -Wait -PassThru -WindowStyle Hidden ` +
       `-ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${Buffer.from(inner, 'utf16le').toString('base64')}'`,
     '  exit $p.ExitCode',
     '} catch { exit 1 }'

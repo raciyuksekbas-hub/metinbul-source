@@ -58,11 +58,14 @@ export function compareVersions(v1: string, v2: string): number {
  * Check GitHub Releases for updates.
  * Does not require credentials; gracefully reports if repo is private or unreachable.
  */
+export const UPDATE_CHECK_TIMEOUT_MS = 10_000;
+
 export async function checkForUpdates(
   currentVersion: string,
   options?: {
     repo?: string;
     fetchFn?: typeof fetch;
+    timeoutMs?: number;
   }
 ): Promise<UpdateCheckResult> {
   const repo = options?.repo || GITHUB_REPO;
@@ -85,7 +88,11 @@ export async function checkForUpdates(
       headers: {
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': `MetinBul-App/${currentVersion}`
-      }
+      },
+      // A network that swallows the request (a captive portal, a proxy that
+      // never answers) used to leave "Güncellemeler denetleniyor…" up for
+      // good. The body is read under the same deadline.
+      signal: AbortSignal.timeout(options?.timeoutMs ?? UPDATE_CHECK_TIMEOUT_MS)
     });
 
     if (response.status === 404 || response.status === 401 || response.status === 403) {

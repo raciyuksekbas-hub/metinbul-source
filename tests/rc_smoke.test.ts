@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -6,20 +6,12 @@ import { AppDatabase } from '../src/db/database.js';
 import { indexFolders } from '../src/search/indexer.js';
 import { search } from '../src/search/search.js';
 
-// Mock scanDirectories to filter only our RC smoke test files, avoiding crawling 116,000 files!
-vi.mock('../src/scanner/scanner.js', async (importOriginal) => {
-  const mod = await importOriginal<any>();
-  return {
-    ...mod,
-    scanDirectories: async (folders: string[], excludedPaths: string[], explicitIncludes: string[]) => {
-      const all = await mod.scanDirectories(folders, excludedPaths, explicitIncludes);
-      return all.filter((f: any) => f.filename.includes('MetinBul') || f.filename.includes('Smoke'));
-    }
-  };
-});
-
+// A real file system, but a home folder of the test's own: this test used to
+// write into the developer's -- or a reviewer's office computer's -- real
+// Desktop and Documents, crawl both from end to end (and hang when iCloud
+// stalled), and create and remove a "Documents/Private" folder there.
 describe('Release Candidate Real Filesystem Smoke Tests (v0.2.0 Section 1)', () => {
-  const home = os.homedir();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mbrc-home-')));
   const desktopDir = path.join(home, 'Desktop');
   const docsDir = path.join(home, 'Documents');
   const downloadsDir = path.join(home, 'Downloads');
@@ -32,14 +24,11 @@ describe('Release Candidate Real Filesystem Smoke Tests (v0.2.0 Section 1)', () 
   const snippetDoc = path.join(desktopDir, 'MetinBulSnippetTest.udf');
 
   let db: AppDatabase;
-  const tempDbPath = path.join(os.tmpdir(), 'metinbul_rc_smoke_real.db');
+  const tempDbPath = path.join(home, 'metinbul_rc_smoke_real.db');
 
   beforeAll(async () => {
-    // 1. Clean up existing files
-    for (const f of [fileDesktop, fileDocs, filePublic, filePrivate, snippetDoc]) {
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
-    if (fs.existsSync(privateDir)) fs.rmdirSync(privateDir);
+    // 1. The home folder's usual folders
+    for (const dir of [desktopDir, docsDir, downloadsDir]) fs.mkdirSync(dir, { recursive: true });
 
     // 2. Write real smoke files
     fs.writeFileSync(fileDesktop, '<udf>METINBUL_SCOPE_SMOKE_847261</udf>');
@@ -60,12 +49,7 @@ describe('Release Candidate Real Filesystem Smoke Tests (v0.2.0 Section 1)', () 
   afterAll(() => {
     db.close();
     if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
-
-    // Clean up files
-    for (const f of [fileDesktop, fileDocs, filePublic, filePrivate, snippetDoc]) {
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
-    if (fs.existsSync(privateDir)) fs.rmdirSync(privateDir);
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
   it('TEST A — Desktop Only: should return only Desktop result', () => {

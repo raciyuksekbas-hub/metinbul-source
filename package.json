@@ -1,7 +1,7 @@
 {
   "name": "metinbul",
   "productName": "MetinBul",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "DOC, DOCX, PDF ve UDF belgelerinde yerel metin arama utility'si",
   "main": "dist/main.js",
   "type": "module",
@@ -61,6 +61,7 @@
     "files": [
       "dist/**/*",
       "!dist/native/**",
+      "!node_modules/@napi-rs/**",
       "package.json"
     ],
     "asarUnpack": [
@@ -97,5 +98,9 @@
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "MetinBul"
     }
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron-winstaller": false
   }
 }

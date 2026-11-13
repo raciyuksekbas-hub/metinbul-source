@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, nativeTheme, shell, clipboard, dialog, globalShortcut, screen, session, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, nativeTheme, net, shell, clipboard, dialog, globalShortcut, screen, session, Tray, type IpcMainInvokeEvent } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { Worker } from 'worker_threads';
 import { AppDatabase, OcrCounts, ScopeStatusCounts } from '../db/database.js';
@@ -11,7 +12,7 @@ import { IndexCounts, SearchService } from './search-service.js';
 import { FEEDBACK_EMAIL, getAboutMetadata, getFeedbackMailto, getPackageVersion } from './about-info.js';
 import { checkForUpdates, UpdateCheckResult } from './updater.js';
 import { AppTheme, DEFAULT_THEME, getPanelBackgroundColor, getThemeBackgroundColor, isValidTheme } from '../shared/theme.js';
-import { formatAcceleratorForDisplay, getDefaultAccelerator, isValidAccelerator, conflictsWithScreenReader, SCREEN_READER_CONFLICT_MESSAGE } from './quick-search-shortcut.js';
+import { formatAcceleratorForDisplay, getDefaultAccelerator, isValidAccelerator, isReservedAccelerator, conflictsWithScreenReader, RESERVED_SHORTCUT_MESSAGE, SCREEN_READER_CONFLICT_MESSAGE } from './quick-search-shortcut.js';
 import {
   buildLoginItemConfig,
   buildLoginItemQueryOptions,
@@ -30,6 +31,7 @@ import {
   findForbiddenSwitch,
   hasOpenableExtension,
   isAllowedExternalUrl,
+  isNetworkPath,
   isOpenableDocument,
   isSearchAreaType,
   isSearchScopeMode,
@@ -38,12 +40,17 @@ import {
   MAX_QUERY_LENGTH
 } from './security.js';
 import { removeStalePrivateTempFiles } from '../shared/private-temp.js';
+import { effectiveIndexingMemoryLimitBytes, INDEXING_MEMORY_POLL_MS } from './index-memory.js';
+import { indexDirectory, moveIndexFiles } from './index-location.js';
+import { isGoogleDriveVolume, listWindowsVolumes, volumeOfPath } from '../scanner/windows-volumes.js';
 import { prepareDatabaseKey } from '../db/encryption.js';
 import { encryptOnWorker, indexKeyProtector } from './index-key.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const iconPath = path.join(__dirname, 'assets/icon.icns');
+// The window and Dock icon: .icns is macOS's own format, which Windows cannot
+// load ("Failed to load image" in its log, and no icon on the window).
+const iconPath = path.join(__dirname, process.platform === 'win32' ? 'assets/icon.ico' : 'assets/icon.icns');
 const rendererDir = path.join(__dirname, 'renderer');
 
 app.name = 'MetinBul';
@@ -63,6 +70,12 @@ if (app.isPackaged && process.platform === 'darwin') {
 // Files MetinBul creates -- the index and its -wal/-shm files, Chromium's
 // profile files, temporary OCR files -- are readable by this user only.
 if (process.platform !== 'win32') process.umask(0o077);
+
+// Windows: MetinBul's pages are text and lists, drawn just as well without
+// the graphics card. Its GPU process alone held about 60 MB while MetinBul
+// sat idle in the background (a colleague's review of 0.4.3 measured 160 MB
+// in all, 96 MB without it).
+if (process.platform === 'win32') app.disableHardwareAcceleration();
 
 // Every MetinBul window runs its page in Chromium's sandbox (sandbox: true
 // in each window's webPreferences): a renderer has no Node.js and no file
@@ -98,6 +111,12 @@ let indexReady = false;
 let reopenRequested = false;
 let isIndexing = false;
 let currentIndexingWorker: Worker | null = null;
+// Folders the folder picker returned in this session: the only network
+// folders (\\server\share) a page may add (see isNetworkPath).
+const pickedFolders = new Set<string>();
+function isPickedOrLocal(folderPath: string): boolean {
+  return !isNetworkPath(folderPath) || pickedFolders.has(folderPath);
+}
 let currentTheme: AppTheme = DEFAULT_THEME;
 let pendingOnboarding = false;
 let isQuitting = false;
@@ -105,6 +124,16 @@ let isQuitting = false;
 // with it off, closing the window ends the process exactly as it did before
 // this setting existed.
 let keepRunningInBackground = false;
+// "Ekran paylaşımında gizle": MetinBul's windows show lines of client
+// documents; with this on they are left out of screen sharing, screen
+// recordings, screenshots and Windows Recall (setContentProtection). Off by
+// default: a user may want to share a search on purpose.
+let contentProtection = false;
+
+// The update check goes through Chromium's network stack, so it uses the
+// proxy Windows (or macOS) is set to, as an office network often requires;
+// Node's own fetch ignores it.
+const updateFetch = ((input: string, init?: RequestInit) => net.fetch(input, init)) as typeof fetch;
 // True only when the OS started MetinBul at sign-in rather than the user.
 // Used only to decide whether to put a window on screen.
 let launchedAtLogin = false;
@@ -123,6 +152,10 @@ let ocrEnabled = true;
 let ocrHelperPath: string | null = null;
 let ocrAvailable = false;
 let ocrNeedsTurkishComponent = false;
+// Windows: PowerShell is locked down (Constrained Language Mode) by the
+// computer's security policy, so text recognition cannot run; said in
+// Settings › İndeks instead of text recognition just missing.
+let ocrRestricted = false;
 // Scope counts behind "N belge arandı · M belge işlenemedi". Cached: on the
 // real 718 MB index the first read takes ~300 ms (cold pages), every later one
 // ~4 ms. Dropped whenever the index or the scope changes.
@@ -254,7 +287,8 @@ function getStartupSettingsPayload() {
     startAtLoginSupported,
     startAtLoginStatus,
     keepRunningInBackground,
-    backgroundSupported: canStayResident()
+    backgroundSupported: canStayResident(),
+    contentProtection
   };
 }
 
@@ -286,8 +320,11 @@ async function getIndexStatusPayload() {
     ocrAvailable,
     ocrEnabled,
     ocrNeedsTurkishComponent,
+    ocrRestricted,
     ocrSystemName: process.platform === 'win32' ? 'Windows' : 'macOS',
-    ocrBudgetMinutes: OCR_BUDGET_MS / 60_000
+    ocrBudgetMinutes: OCR_BUDGET_MS / 60_000,
+    indexEncrypted: indexEncryption.encrypted,
+    indexEncryptionProblem: indexEncryption.problem ?? null
   };
   const counts = await readIndexCounts();
   return {
@@ -341,6 +378,7 @@ async function refreshOcrAvailability() {
     const status = await checkWindowsOcr();
     ocrAvailable = status === 'ready';
     ocrNeedsTurkishComponent = status === 'no-turkish';
+    ocrRestricted = status === 'restricted';
   } else if (ocrHelperPath) {
     ocrAvailable = await isMacosOcrAvailable(ocrHelperPath);
   }
@@ -366,8 +404,30 @@ function restoreMainWindow() {
   mainWindow.webContents.send('app:windowRestored');
 }
 
+// Settled at start (settleIndexDirectory); see index-location.ts.
+let indexDir: string | null = null;
+
 function getDbPath(): string {
-  return path.join(app.getPath('userData'), 'metinbul.db');
+  return path.join(indexDir ?? app.getPath('userData'), 'metinbul.db');
+}
+
+// Windows: the index moves out of the roaming profile once (index-location.ts).
+function settleIndexDirectory(): void {
+  const userData = app.getPath('userData');
+  const wanted = indexDirectory({
+    platform: process.platform,
+    userData,
+    defaultUserData: path.join(app.getPath('appData'), app.name),
+    localAppData: process.env.LOCALAPPDATA
+  });
+  const move = moveIndexFiles(userData, wanted);
+  if (typeof move === 'object') {
+    console.error(`[MetinBul] Could not move the index to ${wanted}; it stays where it is for now: ${move.failed}`);
+    indexDir = userData;
+    return;
+  }
+  if (move === 'moved') console.log(`[MetinBul] The index moved to ${wanted}.`);
+  indexDir = wanted;
 }
 
 function getDb(): AppDatabase {
@@ -493,6 +553,7 @@ function openSettingsWindow(section: SettingsSection = 'general', options: { che
     }
   });
   settingsWindow = win;
+  win.setContentProtection(contentProtection);
 
   const query: Record<string, string> = { section: target };
   if (options.checkUpdates) query.checkUpdates = '1';
@@ -523,7 +584,7 @@ function scheduleUpdateCheck(delayMs = 3000) {
   updateCheckScheduled = true;
   setTimeout(async () => {
     try {
-      const result: UpdateCheckResult = await checkForUpdates(getPackageVersion());
+      const result: UpdateCheckResult = await checkForUpdates(getPackageVersion(), { fetchFn: updateFetch });
       if (result.updateAvailable) {
         latestUpdateInfo = result;
         broadcast('app:updateAvailable', result);
@@ -689,6 +750,7 @@ function createWindow(options: { startMinimized?: boolean } = {}) {
       spellcheck: false
     }
   });
+  mainWindow.setContentProtection(contentProtection);
 
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
 
@@ -802,6 +864,7 @@ function createQuickSearchWindow(): BrowserWindow {
     }
   });
   quickSearchWindow = win;
+  win.setContentProtection(contentProtection);
 
   if (isMac) {
     // skipTransformProcessType: the default briefly turns MetinBul into a UI
@@ -836,13 +899,11 @@ function createQuickSearchWindow(): BrowserWindow {
 
   // A panel that stays on top after the user has clicked into another app is
   // a stuck overlay, not a search field: losing key status dismisses it, as
-  // Spotlight does. macOS only -- the framed Windows window keeps its old
-  // semantics.
-  if (isMac) {
-    win.on('blur', () => {
-      if (!quickSearchMenuOpen) hideQuickSearch('blur');
-    });
-  }
+  // Spotlight does. On Windows too since a review of 0.4.3: the window stayed
+  // above every other one, with lines from client documents in it.
+  win.on('blur', () => {
+    if (!quickSearchMenuOpen) hideQuickSearch('blur');
+  });
 
   // A crashed renderer must not leave the shortcut pointing at a dead window:
   // drop it, and the next invocation builds a fresh one.
@@ -869,14 +930,22 @@ function ensureQuickSearchWindow(): BrowserWindow {
 // the panel instead of pushing the window off screen.
 function placeQuickSearchWindow(win: BrowserWindow) {
   const isMac = process.platform === 'darwin';
-  const display = isMac
-    ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    : screen.getDisplayMatching(win.getBounds());
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;
 
   if (!isMac) {
-    // Windows keeps its own placement; only the height budget is derived.
-    const current = win.getContentBounds();
+    // Windows keeps the place the user moved the window to -- on the screen
+    // they are working on. It used to open wherever it had first opened, on
+    // another screen of a multi-screen desk.
+    let current = win.getContentBounds();
+    if (screen.getDisplayMatching(win.getBounds()).id !== display.id) {
+      current = {
+        x: Math.round(area.x + (area.width - current.width) / 2),
+        y: Math.round(area.y + area.height * 0.2),
+        width: current.width,
+        height: current.height
+      };
+    }
     quickSearchMaxHeight = Math.max(
       QUICK_SEARCH_COMPACT_HEIGHT,
       Math.min(QUICK_SEARCH_MAX_HEIGHT, area.y + area.height - current.y - 16)
@@ -1049,8 +1118,30 @@ interface IndexedFileRecord {
   size: number;
 }
 
-function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?: boolean } = {}) {
-  if (isIndexing) return;
+// An update asked for while one runs, with settings that differ from the ones
+// the running one started with (a search area added or removed, the scope
+// changed, the index to be rebuilt): the running update is asked to stop
+// between documents, and this one starts when it has ended. Until 0.4.4 the
+// request was dropped, and a folder excluded during an update went on being
+// read into the index.
+let pendingIndexRun: { trigger: IndexTrigger; rebuild: boolean } | null = null;
+
+interface IndexRunOptions {
+  retryFailed?: boolean;
+  // The settings changed: an update already running must start over.
+  restart?: boolean;
+  // Empty the index before reading the documents again.
+  rebuild?: boolean;
+}
+
+function triggerIndexing(trigger: IndexTrigger = 'user', options: IndexRunOptions = {}) {
+  if (isIndexing) {
+    if (options.restart || options.rebuild) {
+      pendingIndexRun = { trigger, rebuild: (pendingIndexRun?.rebuild ?? false) || options.rebuild === true };
+      currentIndexingWorker?.postMessage({ type: 'stop' });
+    }
+    return;
+  }
   isIndexing = true;
   invalidateIndexCounts();
 
@@ -1067,7 +1158,7 @@ function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?
     // An automatic pass leaves unchanged unreadable files alone: re-reading
     // them every ten minutes would only fail again. A user's update still
     // retries them.
-    workerData: { dbPath, keyHex: indexKeyHex, retryFailed: options.retryFailed ?? trigger === 'user', ocr: ocrWorkerOptions() }
+    workerData: { dbPath, keyHex: indexKeyHex, retryFailed: options.retryFailed ?? trigger === 'user', ocr: ocrWorkerOptions(), rebuild: options.rebuild === true }
   });
   currentIndexingWorker = worker;
 
@@ -1080,9 +1171,15 @@ function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?
   let stuckOn: IndexedFileRecord | null = null;
   let finished = false;
   let watchdog: ReturnType<typeof setTimeout> | null = null;
+  // The same for a document whose parser fills memory outside the thread's
+  // heap limit (see index-memory.ts).
+  let memoryWatch: ReturnType<typeof setInterval> | null = null;
+  const memoryLimit = effectiveIndexingMemoryLimitBytes(os.totalmem());
   const disarm = () => {
     if (watchdog) clearTimeout(watchdog);
     watchdog = null;
+    if (memoryWatch) clearInterval(memoryWatch);
+    memoryWatch = null;
   };
 
   worker.on('message', (msg: { type: 'progress'; progress: IndexProgress } | { type: 'reading'; file: IndexedFileRecord; limitMs: number } | { type: 'done'; summary: { skippedDataless: number } } | { type: 'error'; message: string }) => {
@@ -1095,6 +1192,13 @@ function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?
         console.error(`[MetinBul] A document took longer than ${Math.round(msg.limitMs / 60000)} min to read; stopping this update and skipping that document from now on.`);
         void worker.terminate();
       }, msg.limitMs);
+      memoryWatch = setInterval(() => {
+        if (process.memoryUsage().rss <= memoryLimit) return;
+        stuckOn = reading;
+        disarm();
+        console.error(`[MetinBul] Reading a document took MetinBul past ${Math.round(memoryLimit / 1024 ** 2)} MB of memory; stopping this update and skipping that document from now on.`);
+        void worker.terminate();
+      }, INDEXING_MEMORY_POLL_MS);
       return;
     }
     if (msg.type === 'done' || msg.type === 'error') finished = true;
@@ -1165,6 +1269,15 @@ function triggerIndexing(trigger: IndexTrigger = 'user', options: { retryFailed?
       } catch (err) {
         console.error('[MetinBul] Could not record the unreadable document:', err);
       }
+    }
+    const pending = pendingIndexRun;
+    pendingIndexRun = null;
+    if (pending && !isQuitting) {
+      // The settings changed during this update: start over with them.
+      triggerIndexing(pending.trigger, { rebuild: pending.rebuild });
+      return;
+    }
+    if (quarantined && !isQuitting) {
       // The same update goes on, past that document: without retrying
       // unreadable files, so each stuck document is met once. It shows in
       // Settings › İndeks among the unreadable documents.
@@ -1236,7 +1349,16 @@ function isOpenableIndexedDocument(value: unknown): value is string {
 // Opens the way to the index: its key, and an existing plain index encrypted
 // on a worker thread (once, after an update; a few seconds for a large one).
 // Returns false when MetinBul cannot open its index at all and must quit.
+// Whether the index is encrypted, and why not when it is not -- shown in
+// Settings › İndeks and Hakkında. Until 0.4.4 a failed encryption left the
+// index plain with nothing but a log line, while the release notes said
+// "şifreli".
+let indexEncryption: { encrypted: boolean; problem?: string } = { encrypted: false };
+
+const KEY_STORE_NAME = process.platform === 'win32' ? 'Windows’un veri koruması' : 'Anahtar Zinciri';
+
 async function prepareIndex(): Promise<{ ok: boolean; keyLostNotice?: string }> {
+  settleIndexDirectory();
   const preparation = await prepareDatabaseKey({
     dbPath: getDbPath(),
     protector: indexKeyProtector(),
@@ -1247,28 +1369,42 @@ async function prepareIndex(): Promise<{ ok: boolean; keyLostNotice?: string }> 
     case 'encrypted':
     case 'migrated':
       indexKeyHex = preparation.keyHex;
+      indexEncryption = { encrypted: true };
       return { ok: true };
     case 'key-lost':
       indexKeyHex = preparation.keyHex;
+      indexEncryption = { encrypted: true };
       console.error(`[MetinBul] The index could not be opened (${preparation.reason}); it was moved aside and a new one is started.`);
       return {
         ok: true,
-        keyLostNotice: 'MetinBul dizininin anahtarına ulaşılamadı (örneğin Anahtar Zinciri sıfırlanmış ya da profil başka bir bilgisayardan kopyalanmış olabilir). ' +
+        keyLostNotice: (process.platform === 'win32'
+          ? 'MetinBul dizininin anahtarına ulaşılamadı (örneğin Windows hesabınızın parolası bir yönetici tarafından sıfırlanmış ya da profil başka bir bilgisayardan kopyalanmış olabilir). '
+          : 'MetinBul dizininin anahtarına ulaşılamadı (örneğin Anahtar Zinciri sıfırlanmış ya da profil başka bir bilgisayardan kopyalanmış olabilir). ') +
           'Belgelerinize hiçbir şey olmadı; yalnızca arama dizini ve MetinBul ayarları yeniden oluşturulacak. ' +
-          `Eski dizin silinmedi, şuraya taşındı: ${preparation.movedTo}`
+          `Eski dizin silinmedi, anahtar dosyasıyla birlikte şuraya taşındı: ${preparation.movedTo}`
       };
     case 'migration-failed':
       console.error(`[MetinBul] Encrypting the index failed; it stays as it was and is tried again at the next start: ${preparation.error}`);
+      indexEncryption = {
+        encrypted: false,
+        problem: preparation.reason === 'disk-full'
+          ? 'Arama dizini şifrelenemedi: diskte yeterli boş alan yok. Yer açtıktan sonra MetinBul’u yeniden başlatın; şifreleme yeniden denenecek.'
+          : 'Arama dizini şifrelenemedi. MetinBul bir sonraki açılışta yeniden deneyecek.'
+      };
       return { ok: true };
     case 'no-protector':
       console.error('[MetinBul] The system cannot seal an index key here; the index stays unencrypted.');
+      indexEncryption = {
+        encrypted: false,
+        problem: `Bu bilgisayarda dizinin anahtarını saklayacak sistem bileşeni (${KEY_STORE_NAME}) kullanılamıyor; arama dizini şifrelenmeden tutuluyor.`
+      };
       return { ok: true };
     case 'protector-unavailable':
       await dialog.showMessageBox({
         type: 'error',
         title: 'MetinBul',
         message: 'MetinBul arama dizinini şu anda açamıyor.',
-        detail: 'Dizinin anahtarını koruyan sistem bileşenine (macOS Anahtar Zinciri / Windows) şu anda ulaşılamıyor. ' +
+        detail: `Dizinin anahtarını koruyan sistem bileşenine (${KEY_STORE_NAME}) şu anda ulaşılamıyor. ` +
           'Dizine ve belgelerinize dokunulmadı. Bilgisayarınıza oturum açtığınızdan emin olup MetinBul\'u yeniden başlatın.'
       });
       return { ok: false };
@@ -1323,6 +1459,7 @@ app.whenReady().then(async () => {
     true
   );
   autoIndexEnabled = parseBooleanSetting(appDb.getAppSetting('auto_index_enabled'), true);
+  contentProtection = parseBooleanSetting(appDb.getAppSetting('content_protection'), false);
   ocrEnabled = parseBooleanSetting(appDb.getAppSetting('ocr_enabled'), true);
   ocrHelperPath = locateOcrHelper();
   void refreshOcrAvailability();
@@ -1353,7 +1490,7 @@ app.whenReady().then(async () => {
       if (mode === 'selected' && Array.isArray(folders)) {
         for (const folder of folders.slice(0, 1000)) {
           const folderPath = absolutePath(folder);
-          if (folderPath) {
+          if (folderPath && isPickedOrLocal(folderPath)) {
             appDb.addSearchArea(folderPath, 'include');
           }
         }
@@ -1389,6 +1526,27 @@ app.whenReady().then(async () => {
     return Number.isFinite(parsed) ? parsed : 0;
   });
 
+  handle('app:rebuildIndex', async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const confirmOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Vazgeç', 'Sil ve Yeniden Oluştur'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Arama dizini',
+      message: 'Arama dizini silinip yeniden oluşturulsun mu?',
+      detail: 'Dizindeki bütün metinler silinir ve belgeler baştan okunur. Çok sayıda belgede bu uzun sürebilir; '
+        + 'o sırada arama sonuçları eksik olur. Belgelerinize ve ayarlarınıza dokunulmaz.'
+    };
+    const answer = owner && !owner.isDestroyed()
+      ? await dialog.showMessageBox(owner, confirmOptions)
+      : await dialog.showMessageBox(confirmOptions);
+    if (answer.response !== 1) return false;
+    triggerIndexing('user', { rebuild: true });
+    invalidateIndexCounts();
+    return true;
+  });
+
   handle('app:rescan', async () => {
     await triggerIndexing();
     return true;
@@ -1416,7 +1574,7 @@ app.whenReady().then(async () => {
       if (!isSearchScopeMode(mode)) return false;
       appDb.setSearchScopeMode(mode);
       invalidateIndexCounts();
-      triggerIndexing();
+      triggerIndexing('user', { restart: true });
       return true;
     } catch (err) {
       console.error('Failed to set search scope mode:', err);
@@ -1433,10 +1591,11 @@ app.whenReady().then(async () => {
       // Folders come from the folder picker, so they exist and are folders.
       const folderPath = absolutePath(value);
       if (!folderPath || !isSearchAreaType(type)) return false;
+      if (!isPickedOrLocal(folderPath)) return false;
       if (!fs.statSync(folderPath, { throwIfNoEntry: false })?.isDirectory()) return false;
       appDb.addSearchArea(folderPath, type);
       invalidateIndexCounts();
-      triggerIndexing();
+      triggerIndexing('user', { restart: true });
       return true;
     } catch (err) {
       console.error('Failed to add search area:', err);
@@ -1450,7 +1609,7 @@ app.whenReady().then(async () => {
       if (!folderPath) return false;
       appDb.removeSearchArea(folderPath);
       invalidateIndexCounts();
-      triggerIndexing();
+      triggerIndexing('user', { restart: true });
       return true;
     } catch (err) {
       console.error('Failed to remove search area:', err);
@@ -1458,21 +1617,43 @@ app.whenReady().then(async () => {
     }
   });
 
-  handle('app:selectFolder', async (event) => {
+  handle('app:selectFolder', async (event, purpose: unknown) => {
     // Parented to whichever window asked (Settings on macOS, the main window
     // on Windows) -- macOS has no main window to hang the sheet on any more.
     const owner = BrowserWindow.fromWebContents(event.sender);
+    const parent = owner && !owner.isDestroyed() ? owner : undefined;
     const dialogOptions: Electron.OpenDialogOptions = {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Arama Alanı Seç'
     };
-    const result = owner && !owner.isDestroyed()
-      ? await dialog.showOpenDialog(owner, dialogOptions)
+    const result = parent
+      ? await dialog.showOpenDialog(parent, dialogOptions)
       : await dialog.showOpenDialog(dialogOptions);
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
-    return result.filePaths[0];
+    const folder = result.filePaths[0];
+    if (purpose !== 'exclude' && process.platform === 'win32'
+      && isGoogleDriveVolume(volumeOfPath(folder, (await listWindowsVolumes()) ?? []) ?? { label: '', fileSystem: '' })) {
+      // Google Drive's disk carries no sign of which files are on this
+      // computer, so MetinBul cannot leave out the ones that are not:
+      // reading them makes Drive download them all (windows-volumes.ts).
+      const answerOptions: Electron.MessageBoxOptions = {
+        type: 'warning',
+        buttons: ['Vazgeç', 'Yine de Ekle'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Google Drive klasörü',
+        message: 'Bu klasör Google Drive’da.',
+        detail: 'MetinBul bu klasördeki belgeleri okudukça Google Drive, bilgisayarda olmayanları internetten indirir. '
+          + 'Klasör büyükse bu uzun sürer ve diskte yer kaplar.\n\n'
+          + 'Belgelerin bilgisayarınızda bir kopyası varsa onun bulunduğu klasörü eklemeniz daha iyi olur.'
+      };
+      const answer = parent ? await dialog.showMessageBox(parent, answerOptions) : await dialog.showMessageBox(answerOptions);
+      if (answer.response !== 1) return null;
+    }
+    pickedFolders.add(folder);
+    return folder;
   });
 
   handle('app:openFile', async (_event, filePath: unknown) => {
@@ -1555,7 +1736,7 @@ app.whenReady().then(async () => {
 
   handle('app:checkForUpdates', async (_event) => {
     const version = getPackageVersion();
-    return checkForUpdates(version);
+    return checkForUpdates(version, { fetchFn: updateFetch });
   });
 
   handle('app:getQuickSearchShortcut', () => {
@@ -1576,6 +1757,9 @@ app.whenReady().then(async () => {
     // *why* this particular combination is refused (spec §8).
     if (conflictsWithScreenReader(accelerator)) {
       return { success: false, error: SCREEN_READER_CONFLICT_MESSAGE };
+    }
+    if (isReservedAccelerator(accelerator)) {
+      return { success: false, error: RESERVED_SHORTCUT_MESSAGE };
     }
     if (!isValidAccelerator(accelerator)) {
       return { success: false, error: 'Geçersiz kısayol.' };
@@ -1646,6 +1830,13 @@ app.whenReady().then(async () => {
       'keep_running_in_background',
       serializeBooleanSetting(keepRunningInBackground)
     );
+    return { success: true, settings: getStartupSettingsPayload() };
+  });
+
+  handle('app:setContentProtection', (_event, enabled: unknown) => {
+    contentProtection = enabled === true;
+    appDb.setAppSetting('content_protection', serializeBooleanSetting(contentProtection));
+    for (const win of allWindows()) win.setContentProtection(contentProtection);
     return { success: true, settings: getStartupSettingsPayload() };
   });
 
